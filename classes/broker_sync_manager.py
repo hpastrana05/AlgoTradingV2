@@ -68,8 +68,28 @@ class BrokerSyncManager:
         
         self.last_sync_time = datetime.now()
 
+    def check_ticker_availability(self, ticker):
+        response = get_available_instruments()
+
+        if response:
+            for instrument in response:
+                if instrument["ticker"] == ticker:
+                    return True  
+            return False
+        
+        elif response == "ERROR":
+            LOGGER.error("Failed to fetch available instruments.")
+            return False
+
+        
+
     def process_actions(self, ticker, action, price):
         self.sync(ticker)
+
+        if not self.check_ticker_availability(ticker):
+            LOGGER.info(f"Ticker {ticker} is not available for trading now.")
+            return
+
 
         if not self.is_synchronized:
             LOGGER.error("Cannot process actions due to synchronization errors.")
@@ -80,7 +100,6 @@ class BrokerSyncManager:
         elif action == "SELL":
             self.execute_sell(ticker)
     
-
     def execute_buy(self, ticker, price):
         open_position = self.check_open_position(ticker)
         pending_order = self.check_pending_order("BUY")
