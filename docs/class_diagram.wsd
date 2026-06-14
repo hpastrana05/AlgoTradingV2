@@ -1,0 +1,100 @@
+@startuml
+
+    TradingEngine --> StrategyManager
+    TradingEngine --> BrokerSyncManager
+
+	note "Eliminate Position class" as N1
+    BrokerSyncManager --> Position
+	BrokerSyncManager --> TradingAPI
+
+    StrategyManager --> Position
+    StrategyManager --> Strategy
+    StrategyManager --> DataManager
+
+    Strategy --> FunctionSignal
+    Strategy --> AND
+    Strategy --> OR
+
+    AND --> FunctionSignal
+    OR --> FunctionSignal
+
+    class TradingEngine {
+	    +Class strategy_manager
+	    +Class broker_sync_manager
+
+	    +update_market_data()
+	    +check_trading_strategy()
+    }
+
+    class StrategyManager {
+	    +string name
+	    +Class strategy
+	    +Class position
+	    +Class data_manager
+
+	    +from_json() : @classmethod
+	    +update_market_data()
+	    +check_strategy() : str
+    }
+
+    class BrokerSyncManager {
+	    +dict account
+	    +Class position
+	    +list pending_orders
+	    +datetime last_sync_time
+	    +bool is_syncronized
+
+	    +sync()
+	    +check_open_positions(ticker)
+	    +check_pending_order(ticker, action)
+	    +process_action(ticker, action, price)
+    }
+
+    class Position {
+    }
+
+    class Strategy {
+	    +FunctionSignal entry_signal
+	    +FunctionSignal exit_signal
+
+	    +check_entry() : bool
+	    +check_exit() : bool
+    }
+
+    class DataManager {
+	    +str ticker
+	    +list[str] indicators
+	    +str period
+	    +DataFrame data
+
+	    +fetch_data(ticekr, interval, period)
+	    +update_data()
+	    +get_current_price()
+	    +update_indicators()
+    }
+
+    class FunctionSignal {
+	    +funtion fn
+	    +dict params
+
+	    +evaluate(data, position) : bool
+    }
+
+    class AND {
+	    +list signals
+
+	    +evaluate(data, position) : bool
+    }
+
+    class OR {
+	    +list signals
+
+	    +evaluate(data, position) : bool
+    }
+
+	class TradingAPI{
+	}
+	
+
+	remove Position
+@enduml
