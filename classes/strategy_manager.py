@@ -48,7 +48,7 @@ class StrategyManager:
 
     
     def update_market_data(self):
-        self.data_manager.update_market_data()
+        self.data_manager.update_data()
     
     def check_strategy(self):
         current_price = self.data_manager.get_current_price()

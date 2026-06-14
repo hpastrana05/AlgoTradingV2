@@ -1,4 +1,5 @@
 from .strategy_manager import StrategyManager
+from .broker_sync_manager import BrokerSyncManager
 
 class TradingEngine:
 

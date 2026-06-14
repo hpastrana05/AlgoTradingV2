@@ -13,7 +13,7 @@ def ema_cross_below(data, fast, slow):
 
 def price_over_ema(data, ema_value):
     """Checks if the current price is above the EMA"""
-    return data["close"].iloc[-1] > data[f"EMA_{ema_value}"].iloc[-1]
+    return data["Close"].iloc[-1] > data[f"EMA_{ema_value}"].iloc[-1]
 
 def ema_over_ema(data, ema1, ema2):
     """Checks if EMA1 is above EMA2"""

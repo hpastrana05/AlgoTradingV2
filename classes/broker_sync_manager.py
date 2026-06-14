@@ -83,9 +83,9 @@ class BrokerSyncManager:
 
     def execute_buy(self, ticker, price):
         open_position = self.check_open_position(ticker)
-        pending_order = self.check_pending_order(ticker, "BUY")
+        pending_order = self.check_pending_order("BUY")
 
-        cash_available = self.account["cash"].availableToTrade
+        cash_available = self.account["cash"]["availableToTrade"]
 
         if not open_position and not pending_order and cash_available > 1:
             quantity_to_buy = cash_available / price * 0.99
@@ -94,21 +94,25 @@ class BrokerSyncManager:
 
     def execute_sell(self, ticker):
         open_position = self.check_open_position(ticker)
-        pending_order = self.check_pending_order(ticker, "SELL")
+        pending_order = self.check_pending_order("SELL")
 
         if open_position and not pending_order:
             quantity_to_sell = self.position["quantityAvailableForTrading"]
             post_place_market_order(quantity=-quantity_to_sell, ticker=ticker)
 
-    def check_open_position(self):
+    def check_open_position(self, ticker):
         if self.position is None:
             return False
         else:
-            return True
+            if self.position["instrument"]["ticker"] == ticker:
+                return True
     
     def check_pending_order(self, action):
+        if self.pending_orders is None:
+            return False
+        
         for order in self.pending_orders:
-            if order.initinitiatedFrom == "API" and order.side == action:
+            if order["initiatedFrom"] == "API" and order["side"] == action:
                 return True
         
         return False
