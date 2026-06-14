@@ -1,0 +1,26 @@
+{
+    "name": "Strategia de prueba",
+    "ticker_API": "AAPL_US_EQ",
+    "ticker_data": "AAPL",
+    "indicators": { "EMA": [10, 25] },
+    "interval": "1m",
+    "period": "1D",
+    "action": "BUY",
+    "entry_rule": {
+        "type": "ema_cross_above",
+        "fast": 10,
+        "slow": 25
+    },
+    "exit_rule": {
+        "type": "AND",
+        "signals": [
+            {
+                "type": "ema_cross_below",
+                "fast": 10,
+                "slow": 25
+            }
+        ]
+
+    }
+
+}

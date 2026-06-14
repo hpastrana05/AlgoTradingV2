@@ -47,7 +47,7 @@ def sleep_until_next_interval(hours=0, minutes=0, seconds=0, offset_seconds=0):
 def main():
     LOGGER.info("Starting the trading engine...")
 
-    strat_path = "strategies/strat_1.json"
+    strat_path = "strategies/strat_2.json"
 
     trading_engine = TradingEngine(strat_path)
     

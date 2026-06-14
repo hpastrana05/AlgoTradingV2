@@ -1,4 +1,4 @@
-from signals import build_signal
+from .signals import build_signal
 
 class Strategy:
 
