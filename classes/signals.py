@@ -27,8 +27,8 @@ class FunctionSignal:
     def evaluate(self, data, position = None) -> bool:
         result = self.fn(data, **self.params, position = position)
 
-        if not isinstance(result, bool):
-            LOGGER.fatal(f"Evaluation error of: {self.fn}")
+        if not isinstance(result, (numpy.bool, bool)):
+            LOGGER.fatal(f"Evaluation error of: {self.fn}. Result and result type: {result}, {type(result)}")
 
         return result
 
