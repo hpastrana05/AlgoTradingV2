@@ -6,8 +6,8 @@ class Strategy:
         self.entry_signal = build_signal(entry_signal)
         self.exit_signal = build_signal(exit_signal)
 
-    def check_entry(self, data) -> bool:
-        return self.entry_signal.evaluate(data)
+    def check_entry(self, data, position) -> bool:
+        return self.entry_signal.evaluate(data, position)
 
-    def check_exit(self, data) -> bool:
-        return self.exit_signal.evaluate(data)
+    def check_exit(self, data, position) -> bool:
+        return self.exit_signal.evaluate(data, position)

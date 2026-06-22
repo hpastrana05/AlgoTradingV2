@@ -10,6 +10,8 @@ SIGNAL_REGISTRY = {
     "rsi_between": rsi_between,
     "bullish_MACD_cross": bullish_MACD_cross,
     "bearish_MACD_cross": bearish_MACD_cross,
+    "tp_percentage": tp_percentage,
+    "sl_percentage": sl_percentage,
 }
 
 
@@ -22,23 +24,28 @@ class FunctionSignal:
         self.fn = fn
         self.params = params
     
-    def evaluate(self, data) -> bool:
-        return self.fn(data, **self.params)
+    def evaluate(self, data, position = None) -> bool:
+        result = self.fn(data, **self.params, position = position)
+
+        if not isinstance(result, bool):
+            LOGGER.fatal(f"Evaluation error of: {self.fn}")
+
+        return result
 
 
 class AND:
     def __init__(self, *signals):
         self.signals = signals
     
-    def evaluate(self, data) -> bool:
-        return all(s.evaluate(data) for s in self.signals)
+    def evaluate(self, data, position=None) -> bool:
+        return all(s.evaluate(data, position) for s in self.signals)
 
 class OR:
     def __init__(self, *signals):
         self.signals = signals
     
-    def evaluate(self, data) -> bool:
-        return any(s.evaluate(data) for s in self.signals)
+    def evaluate(self, data, position = None) -> bool:
+        return any(s.evaluate(data, position) for s in self.signals)
     
 
 def build_signal(config: dict):

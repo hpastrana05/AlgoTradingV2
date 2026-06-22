@@ -7,7 +7,7 @@ from classes.trading_engine import TradingEngine
 logging.basicConfig(
     filename="logs/algoTrading.log",
     format='%(asctime)s | %(name)s | %(levelname)s -> %(message)s',
-    datefmt='%m/%d/%Y %H:%M:%S',
+    datefmt='%d/%m/%Y %H:%M:%S',
     level=logging.INFO
 )
 

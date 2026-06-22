@@ -2,4 +2,4 @@
 Second version of the Algorithmic Trading Script
 
 
-TODO: Implement the TP/SL logic in the entry/exit signals. 
+TP-SL percentage implemented, Logic for tp-sl adapted for adding more types of tp-sl
