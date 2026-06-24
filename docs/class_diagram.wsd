@@ -3,7 +3,6 @@
     TradingEngine --> StrategyManager
     TradingEngine --> BrokerSyncManager
 
-	note "Eliminate Position class" as N1
     BrokerSyncManager --> Position
 	BrokerSyncManager --> TradingAPI
 

@@ -18,6 +18,10 @@
                 "type": "ema_cross_below",
                 "fast": 10,
                 "slow": 25
+            },
+            {
+                "type": "tp_percentage",
+                "percentage": 25
             }
         ]
 
