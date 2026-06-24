@@ -1,4 +1,5 @@
 import logging
+import numpy
 from signals.entry_exit_signals import *
 
 
