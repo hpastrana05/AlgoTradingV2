@@ -2,6 +2,9 @@
 Second version of the Algorithmic Trading Script
 
 ## TODO
+
+- Modify entry_price from position.py when tp/sl is used (or every time).
+
 - TP-SL percentage implemented, Logic for tp-sl adapted for adding more types of tp-sl
 
 - Try to automate the `SIGNAL_REGISTRY` in signals.py
@@ -9,7 +12,7 @@ Second version of the Algorithmic Trading Script
 - Add a Backtesting for the strategies using StrategyManager
 
 ## Program Architecture
-![alt text](docs/images/Architecture.png)
+![Architecture of the Proyect.](docs/images/Architecture.png)
 
 In the image we can see how the architecture of the program was made. The Program has 3 main parts:
 * `StrategyManager`:
