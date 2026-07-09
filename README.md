@@ -1,5 +1,5 @@
 # AlgoTrading V2
-Second version of the Algorithmic Trading Script
+Algorithmic Trading using JSON as strategy input, and connecting with Trading212 platform.
 
 ## TODO
 
