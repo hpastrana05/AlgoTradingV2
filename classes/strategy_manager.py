@@ -55,10 +55,12 @@ class StrategyManager:
 
         if self.strategy.check_exit(self.data_manager.data, self.position):
             LOGGER.info(f"Exit signal triggered for: {self.name}")
+            self.position.entry_price = None
             return self.position.ticker, "SELL", current_price
         
         if self.strategy.check_entry(self.data_manager.data, self.position):
             LOGGER.info(f"Entry signal triggered for: {self.name}")
+            self.position.entry_price = current_price
             return self.position.ticker, "BUY", current_price
         
         return self.position.ticker, "HOLD", current_price

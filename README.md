@@ -3,8 +3,6 @@ Second version of the Algorithmic Trading Script
 
 ## TODO
 
-- Modify entry_price from position.py when tp/sl is used (or every time).
-
 - TP-SL percentage implemented, Logic for tp-sl adapted for adding more types of tp-sl
 
 - Try to automate the `SIGNAL_REGISTRY` in signals.py
