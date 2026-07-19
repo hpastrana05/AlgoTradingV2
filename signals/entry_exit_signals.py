@@ -39,6 +39,8 @@ def bearish_MACD_cross(data, values, *_, **__):
     return is_bearish
 
 def tp_percentage(data, percentage, position,  *_, **__):
+    if position is None or position.entry_price is None:
+        return False
     entry = position.entry_price
 
     percentage = percentage / 100
@@ -52,9 +54,11 @@ def tp_percentage(data, percentage, position,  *_, **__):
         return data["Close"].iloc[-1] <= stop_price
     
     else:
-        return -1
+        return False
 
 def sl_percentage(data, percentage, position, *_, **__):
+    if position is None or position.entry_price is None:
+        return False
     entry = position.entry_price
 
     percentage = percentage / 100
@@ -68,4 +72,4 @@ def sl_percentage(data, percentage, position, *_, **__):
         return data["Close"].iloc[-1] >= stop_price
     
     else:
-        return -1
+        return False

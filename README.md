@@ -20,6 +20,18 @@ This class recieves the action it needs to perform and connects to the Trading p
 * `TradingEngine`:
 This class is the main brain of the program, it connects the StrategyManager with the BrokerSyncManager and runs the whole program.
 
+## Backtests
+
+For running a backtest on 5 days of historical data and 0.1% commision on strat_2.json run like this
+
+`.venv\Scripts\python main_backtest.py --strategy strategies/strat_2.json --period 5d --commission 0.001 --capital 10000 `
+
+## UI
+
+For running the UI
+
+`.venv\Scripts\uvicorn frontend.main:app --reload`
+
 ## Strategies
 
 For creating strategies, we need to create a JSON file in the strategies folder which contains the data for the strategy.

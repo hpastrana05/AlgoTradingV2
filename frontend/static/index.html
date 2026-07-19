@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AlgoTrading V2 Control Center</title>
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="dark-theme">
+    <div class="app-container">
+      <!-- Sidebar Navigation -->
+      <aside class="sidebar">
+        <div class="sidebar-logo">
+          <i data-lucide="trending-up" class="logo-icon"></i>
+          <div class="logo-text">
+            <h1>Antigravity</h1>
+            <span>AlgoTrading V2</span>
+          </div>
+        </div>
+
+        <nav class="sidebar-nav">
+          <button class="nav-btn active" data-tab="backtest">
+            <i data-lucide="line-chart"></i>
+            <span>Backtest Panel</span>
+          </button>
+          <button class="nav-btn" data-tab="creator">
+            <i data-lucide="cpu"></i>
+            <span>Strategy Creator</span>
+          </button>
+          <button class="nav-btn" data-tab="strategies">
+            <i data-lucide="folder-open"></i>
+            <span>Saved Strategies</span>
+          </button>
+        </nav>
+
+        <div class="sidebar-footer">
+          <div class="status-indicator online">
+            <span class="pulse-dot"></span>
+            <span class="status-text">Server Active</span>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Content Area -->
+      <main class="main-content">
+        <!-- Header -->
+        <header class="content-header">
+          <div class="header-title">
+            <h2 id="current-tab-title">Backtest Panel</h2>
+            <p id="current-tab-desc">
+              Run historical simulations and analyze strategy performance.
+            </p>
+          </div>
+          <div class="header-actions">
+            <div id="loading-spinner" class="spinner-container hidden">
+              <div class="spinner"></div>
+              <span>Processing...</span>
+            </div>
+          </div>
+        </header>
+
+        <!-- Notifications Toast -->
+        <div id="toast-container" class="toast-container"></div>
+
+        <!-- Tab Content: Backtest -->
+        <section id="tab-backtest" class="tab-pane active">
+          <div class="dashboard-grid">
+            <!-- Control Panel Card -->
+            <div class="card control-card">
+              <div class="card-header">
+                <i data-lucide="settings"></i>
+                <h3>Simulation Configuration</h3>
+              </div>
+              <form id="backtest-form" class="form-grid">
+                <div class="form-group">
+                  <label for="strategy-select">Select Strategy</label>
+                  <select id="strategy-select" required>
+                    <option value="" disabled selected>
+                      Loading strategies...
+                    </option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="backtest-capital">Initial Capital ($)</label>
+                  <input
+                    type="number"
+                    id="backtest-capital"
+                    value="10000"
+                    required
+                  />
+                </div>
+
+                <div class="form-group">
+                  <label for="backtest-commission">Commission Rate (%)</label>
+                  <input
+                    type="number"
+                    id="backtest-commission"
+                    value="0.1"
+                    min="0"
+                    max="5"
+                    step="0.01"
+                    required
+                  />
+                  <span class="input-hint">0.1% = 0.001</span>
+                </div>
+
+                <div class="form-group">
+                  <label for="backtest-period">Data Period (Override)</label>
+                  <select id="backtest-period">
+                    <option value="">Default (Strategy config)</option>
+                    <option value="1d">1 Day</option>
+                    <option value="5d">5 Days</option>
+                    <option value="1mo">1 Month</option>
+                    <option value="3mo">3 Months</option>
+                    <option value="6mo">6 Months</option>
+                    <option value="1y">1 Year</option>
+                    <option value="max">Max Period</option>
+                  </select>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-block">
+                  <i data-lucide="play-circle"></i>
+                  <span>Run Simulation</span>
+                </button>
+              </form>
+            </div>
+
+            <!-- Metrics Grid (Dynamic) -->
+            <div class="metrics-grid">
+              <div class="metric-card pnl-card">
+                <span class="metric-label">Net Profit / Loss</span>
+                <div class="metric-value" id="metric-pnl">$0.00</div>
+                <div class="metric-trend" id="metric-pnl-pct">0.00%</div>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Win Rate</span>
+                <div class="metric-value" id="metric-win-rate">0.00%</div>
+                <div class="metric-subtext" id="metric-trades-count">
+                  0 total trades
+                </div>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Max Drawdown</span>
+                <div class="metric-value text-warning" id="metric-drawdown">
+                  0.00%
+                </div>
+                <div class="metric-subtext">Peak to valley drop</div>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Final Portfolio Value</span>
+                <div class="metric-value" id="metric-final-val">$10,000.00</div>
+                <div class="metric-subtext">Cash + holdings value</div>
+              </div>
+            </div>
+
+            <!-- Chart Card -->
+            <div class="card chart-card full-width">
+              <div class="card-header">
+                <i data-lucide="area-chart"></i>
+                <h3>Portfolio Growth Chart</h3>
+              </div>
+              <div class="chart-wrapper">
+                <canvas id="portfolioChart"></canvas>
+              </div>
+            </div>
+
+            <!-- Trade Log Card -->
+            <div class="card log-card full-width">
+              <div class="card-header">
+                <i data-lucide="scroll"></i>
+                <h3>Execution Trade Log</h3>
+              </div>
+              <div class="table-wrapper">
+                <table class="data-table" id="trade-log-table">
+                  <thead>
+                    <tr>
+                      <th>Trade Pair</th>
+                      <th>Buy Time</th>
+                      <th>Buy Price</th>
+                      <th>Sell Time</th>
+                      <th>Sell Price</th>
+                      <th>Trade PnL ($)</th>
+                      <th>Return (%)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="empty-state-row">
+                      <td colspan="7">
+                        No simulation data loaded. Select options above and
+                        click "Run Simulation".
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Tab Content: Creator -->
+        <section id="tab-creator" class="tab-pane">
+          <div class="creator-container">
+            <form id="strategy-creator-form">
+              <!-- Core Strategy settings -->
+              <div class="card">
+                <div class="card-header">
+                  <i data-lucide="file-cog"></i>
+                  <h3>Strategy Parameters</h3>
+                </div>
+                <div class="form-row">
+                  <div class="form-group flex-1">
+                    <label for="strat-name">Strategy Name</label>
+                    <input
+                      type="text"
+                      id="strat-name"
+                      placeholder="E.g., EMA Crossover with RSI Filter"
+                      required
+                    />
+                  </div>
+                  <div class="form-group flex-1">
+                    <label for="strat-ticker-api">Broker Ticker (API)</label>
+                    <input
+                      type="text"
+                      id="strat-ticker-api"
+                      placeholder="E.g., AAPL_US_EQ"
+                      required
+                    />
+                  </div>
+                  <div class="form-group flex-1">
+                    <label for="strat-ticker-data">Yahoo Ticker (Data)</label>
+                    <input
+                      type="text"
+                      id="strat-ticker-data"
+                      placeholder="E.g., AAPL"
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div class="form-row mt-3">
+                  <div class="form-group flex-1">
+                    <label for="strat-interval">Data Interval</label>
+                    <select id="strat-interval" required>
+                      <option value="1m">1 Minute</option>
+                      <option value="5m">5 Minutes</option>
+                      <option value="15m">15 Minutes</option>
+                      <option value="30m">30 Minutes</option>
+                      <option value="1h">1 Hour</option>
+                      <option value="1d" selected>1 Day</option>
+                    </select>
+                  </div>
+                  <div class="form-group flex-1">
+                    <label for="strat-period">Default Data Period</label>
+                    <select id="strat-period" required>
+                      <option value="1d">1 Day (1m only)</option>
+                      <option value="5d">5 Days</option>
+                      <option value="1mo">1 Month</option>
+                      <option value="3mo">3 Months</option>
+                      <option value="6mo">6 Months</option>
+                      <option value="1y" selected>1 Year</option>
+                      <option value="max">Max</option>
+                    </select>
+                  </div>
+                  <div class="form-group flex-1">
+                    <label for="strat-action">Execution Action</label>
+                    <select id="strat-action" required>
+                      <option value="BUY">BUY (Long-only)</option>
+                      <option value="SELL">SELL (Short-only)</option>
+                    </select>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Technical Indicators configuration -->
+              <div class="card mt-4">
+                <div class="card-header justify-between">
+                  <div class="flex-align">
+                    <i data-lucide="gauge"></i>
+                    <h3>Technical Indicators</h3>
+                  </div>
+                  <button
+                    type="button"
+                    class="btn btn-secondary btn-sm"
+                    id="btn-add-indicator"
+                  >
+                    <i data-lucide="plus"></i> Add Indicator
+                  </button>
+                </div>
+                <div class="indicators-list" id="indicators-container">
+                  <!-- Dynamic indicators will be added here -->
+                </div>
+              </div>
+
+              <!-- Rules configuration -->
+              <div class="rules-grid mt-4">
+                <!-- Entry Rules -->
+                <div class="card">
+                  <div class="card-header justify-between">
+                    <div class="flex-align">
+                      <i data-lucide="log-in" class="text-success"></i>
+                      <h3>Entry Signal Rule</h3>
+                    </div>
+                  </div>
+                  <div class="rule-builder-body">
+                    <div class="form-group">
+                      <label for="entry-rule-op">Logic Operator</label>
+                      <select
+                        id="entry-rule-op"
+                        class="rule-op-select"
+                        data-rule-type="entry"
+                      >
+                        <option value="SINGLE">Single Signal</option>
+                        <option value="AND">ALL (AND)</option>
+                        <option value="OR">ANY (OR)</option>
+                      </select>
+                    </div>
+                    <div
+                      class="signals-builder-container"
+                      id="entry-signals-container"
+                    >
+                      <!-- Dynamic signals go here -->
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Exit Rules -->
+                <div class="card">
+                  <div class="card-header justify-between">
+                    <div class="flex-align">
+                      <i data-lucide="log-out" class="text-danger"></i>
+                      <h3>Exit Signal Rule</h3>
+                    </div>
+                  </div>
+                  <div class="rule-builder-body">
+                    <div class="form-group">
+                      <label for="exit-rule-op">Logic Operator</label>
+                      <select
+                        id="exit-rule-op"
+                        class="rule-op-select"
+                        data-rule-type="exit"
+                      >
+                        <option value="SINGLE">Single Signal</option>
+                        <option value="AND">ALL (AND)</option>
+                        <option value="OR">ANY (OR)</option>
+                      </select>
+                    </div>
+                    <div
+                      class="signals-builder-container"
+                      id="exit-signals-container"
+                    >
+                      <!-- Dynamic signals go here -->
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Form actions -->
+              <div class="form-actions-bar mt-4">
+                <button type="submit" class="btn btn-primary btn-lg">
+                  <i data-lucide="save"></i>
+                  <span>Save Strategy Config</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </section>
+
+        <!-- Tab Content: Strategies List -->
+        <section id="tab-strategies" class="tab-pane">
+          <div class="strategies-list-container" id="strategies-cards-grid">
+            <!-- Dynamic strategy cards will be placed here -->
+            <div class="loading-state">
+              <div class="spinner"></div>
+              <p>Scanning strategies folder...</p>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <!-- Script imports -->
+    <script src="app.js"></script>
+  </body>
+</html>

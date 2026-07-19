@@ -1,18 +1,14 @@
 import logging
 import numpy
+import inspect
+import signals.entry_exit_signals as entry_exit_signals
 from signals.entry_exit_signals import *
 
-
+# Dynamically populate SIGNAL_REGISTRY with all functions defined in signals.entry_exit_signals
 SIGNAL_REGISTRY = {
-    "ema_cross_above": ema_cross_above,
-    "ema_cross_below": ema_cross_below,
-    "price_over_ema": price_over_ema,
-    "ema_over_ema": ema_over_ema,
-    "rsi_between": rsi_between,
-    "bullish_MACD_cross": bullish_MACD_cross,
-    "bearish_MACD_cross": bearish_MACD_cross,
-    "tp_percentage": tp_percentage,
-    "sl_percentage": sl_percentage,
+    name: obj
+    for name, obj in inspect.getmembers(entry_exit_signals, inspect.isfunction)
+    if obj.__module__ == entry_exit_signals.__name__
 }
 
 
