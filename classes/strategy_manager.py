@@ -4,6 +4,7 @@ import logging
 from .position import Position
 from .data_manager import DataManager
 from .strategy import Strategy
+from .signals import derive_indicators
 
 LOGGER = logging.getLogger("StrategyManager")
 
@@ -19,28 +20,29 @@ class StrategyManager:
         try:
             with open(file_path, 'r') as f:
                 config = json.load(f)
-                keys = config.keys()
+
+                entry_rule = config["entry_rule"]
+                exit_rule = config["exit_rule"]
 
                 strategy = Strategy(
-                    entry_signal=config["entry_rule"],
-                    exit_signal=config["exit_rule"],
+                    entry_signal=entry_rule,
+                    exit_signal=exit_rule,
                 )
 
-                if "period" in keys:
-                    period = config["period"]
-                else:
-                    period = None
-                
-                dm = DataManager(ticker = config["ticker_data"], 
-                                indicators=config["indicators"], 
-                                interval=config["interval"],
-                                period=period)
+                # Indicators are derived from rules — no separate config needed
+                indicators = derive_indicators(entry_rule, exit_rule)
+                LOGGER.info(f"Derived indicators for '{config['name']}': {indicators}")
+
+                dm = DataManager(
+                    ticker=config["ticker_data"],
+                    indicators=indicators,
+                    interval=config["interval"],
+                    period=config.get("period"),
+                )
                 
                 position = Position(ticker=config["ticker_data"], action=config["action"])
                 
                 return cls(name=config["name"], strategy=strategy, position=position, data_manager=dm)
-
-                
 
         except Exception as e:
             LOGGER.error(f"Error loading strategy from {file_path}: {e}")

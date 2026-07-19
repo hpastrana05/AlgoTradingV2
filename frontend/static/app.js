@@ -2,7 +2,8 @@
 const state = {
     signals: [],      // Dynamic signal definitions from API
     strategies: [],   // List of existing strategies
-    chart: null       // Chart.js instance
+    chart: null,      // Chart.js instance
+    editingFile: null // Filename being edited, or null when creating
 };
 
 // ==========================================================================
@@ -79,7 +80,7 @@ function initTabs() {
         },
         'creator': {
             title: 'Strategy Creator',
-            desc: 'Configure technical indicators and dynamic entry/exit signal logic.'
+            desc: 'Configure entry/exit signal logic. Indicators are derived automatically from your rules.'
         },
         'strategies': {
             title: 'Saved Strategies',
@@ -243,7 +244,7 @@ function renderTradeLog(tradePairs) {
     if (tradePairs.length === 0) {
         tbody.innerHTML = `
             <tr class="empty-state-row">
-                <td colspan="7">No trades executed during the backtest period. Try updating indicators or selecting a different data period.</td>
+                <td colspan="7">No trades executed during the backtest period. Try adjusting entry/exit rules or selecting a different data period.</td>
             </tr>
         `;
         return;
@@ -385,10 +386,6 @@ function renderChart(history) {
 // STRATEGY CREATOR LOGIC
 // ==========================================================================
 function initCreator() {
-    // Dynamic indicators collection
-    document.getElementById('btn-add-indicator').addEventListener('click', () => addIndicatorRow());
-    
-    // Logic Operators change bindings
     document.querySelectorAll('.rule-op-select').forEach(select => {
         select.addEventListener('change', (e) => {
             const ruleType = e.target.getAttribute('data-rule-type');
@@ -396,84 +393,120 @@ function initCreator() {
             renderRuleSignals(ruleType, op);
         });
     });
-    
-    // Form saving strategy binding
+
     document.getElementById('strategy-creator-form').addEventListener('submit', saveStrategy);
-    
-    // Initial states: add one default indicator and single signals
-    addIndicatorRow("EMA", "10, 25");
+    document.getElementById('btn-cancel-edit').addEventListener('click', () => {
+        resetCreatorForm();
+        showToast("Edit Cancelled", "Switched back to creating a new strategy.", "info");
+    });
+
     renderRuleSignals("entry", "SINGLE");
     renderRuleSignals("exit", "SINGLE");
+    updateCreatorModeUI();
 }
 
-// Adds an indicator row to the creator form
-function addIndicatorRow(defaultName = "EMA", defaultValues = "") {
-    const container = document.getElementById('indicators-container');
-    const row = document.createElement('div');
-    row.className = 'indicator-row';
-    
-    row.innerHTML = `
-        <select class="indicator-select" required>
-            <option value="EMA" ${defaultName === 'EMA' ? 'selected' : ''}>EMA</option>
-            <option value="SMA" ${defaultName === 'SMA' ? 'selected' : ''}>SMA</option>
-            <option value="WMA" ${defaultName === 'WMA' ? 'selected' : ''}>WMA</option>
-            <option value="RSI" ${defaultName === 'RSI' ? 'selected' : ''}>RSI</option>
-            <option value="ATR" ${defaultName === 'ATR' ? 'selected' : ''}>ATR</option>
-            <option value="BBands" ${defaultName === 'BBands' ? 'selected' : ''}>Bollinger Bands</option>
-            <option value="MACD" ${defaultName === 'MACD' ? 'selected' : ''}>MACD</option>
-        </select>
-        <div class="indicator-values">
-            <input type="text" class="indicator-val-input" placeholder="Values (comma-separated, e.g. 10, 20)" value="${defaultValues}" required>
-        </div>
-        <button type="button" class="icon-btn-danger btn-remove-row">
-            <i data-lucide="trash-2"></i>
-        </button>
-    `;
-    
-    container.appendChild(row);
+function updateCreatorModeUI() {
+    const badge = document.getElementById('creator-mode-badge');
+    const hint = document.getElementById('creator-edit-hint');
+    const cancelBtn = document.getElementById('btn-cancel-edit');
+    const saveLabel = document.getElementById('btn-save-strategy-label');
+
+    if (state.editingFile) {
+        badge.classList.remove('hidden');
+        hint.classList.remove('hidden');
+        cancelBtn.classList.remove('hidden');
+        saveLabel.textContent = "Update Strategy";
+    } else {
+        badge.classList.add('hidden');
+        hint.classList.add('hidden');
+        cancelBtn.classList.add('hidden');
+        saveLabel.textContent = "Save Strategy Config";
+    }
     lucide.createIcons();
-    
-    row.querySelector('.btn-remove-row').addEventListener('click', () => {
-        row.remove();
-    });
+}
+
+function resetCreatorForm() {
+    state.editingFile = null;
+    document.getElementById('strategy-creator-form').reset();
+    document.getElementById('entry-rule-op').value = "SINGLE";
+    document.getElementById('exit-rule-op').value = "SINGLE";
+    renderRuleSignals("entry", "SINGLE");
+    renderRuleSignals("exit", "SINGLE");
+    updateCreatorModeUI();
 }
 
 // Renders the signals elements inside rule containers based on operator selection
-function renderRuleSignals(ruleType, operator) {
+function renderRuleSignals(ruleType, operator, presetSignals = null) {
     const container = document.getElementById(`${ruleType}-signals-container`);
     container.innerHTML = '';
-    
-    if (operator === 'SINGLE') {
-        addSignalRowItem(container, ruleType);
-    } else {
-        // AND / OR allows multiple, so we can give a header helper button
+
+    if (operator !== 'SINGLE') {
         const addBtn = document.createElement('button');
         addBtn.type = 'button';
         addBtn.className = 'btn btn-secondary btn-sm mb-3';
         addBtn.innerHTML = '<i data-lucide="plus"></i> Add Sub-Signal';
         container.appendChild(addBtn);
         lucide.createIcons();
-        
-        // Add first sub-signal by default
-        addSignalRowItem(container, ruleType, true);
-        
+
         addBtn.addEventListener('click', () => {
             addSignalRowItem(container, ruleType, true);
         });
     }
+
+    const signals = presetSignals && presetSignals.length
+        ? presetSignals
+        : [null];
+
+    signals.forEach((preset) => {
+        addSignalRowItem(container, ruleType, operator !== 'SINGLE', preset);
+    });
 }
 
-// Adds one signal row builder
-function addSignalRowItem(container, ruleType, isRemoveable = false) {
+function fillSignalParams(paramsGrid, signalMeta, preset = null) {
+    paramsGrid.innerHTML = '';
+
+    if (signalMeta && signalMeta.parameters.length > 0) {
+        signalMeta.parameters.forEach(p => {
+            const field = document.createElement('div');
+            field.className = 'signal-param-field';
+
+            let value = p.default !== null && p.default !== undefined ? p.default : '';
+            if (preset && preset[p.name] !== undefined && preset[p.name] !== null) {
+                value = Array.isArray(preset[p.name])
+                    ? preset[p.name].join(',')
+                    : preset[p.name];
+            }
+
+            field.innerHTML = `
+                <label>${p.name}</label>
+                <input type="text"
+                       data-param-name="${p.name}"
+                       data-param-type="${p.type}"
+                       placeholder="${p.description}"
+                       value="${value}"
+                       required>
+            `;
+            paramsGrid.appendChild(field);
+        });
+    } else if (signalMeta) {
+        paramsGrid.innerHTML = '<span class="input-hint">No configuration parameters required for this signal.</span>';
+    }
+}
+
+// Adds one signal row builder. Optional preset fills type + params (edit mode).
+function addSignalRowItem(container, ruleType, isRemoveable = false, preset = null) {
     const row = document.createElement('div');
     row.className = 'signal-row-item';
-    
-    const dropdownOptions = state.signals.map(s => `<option value="${s.name}">${s.name}</option>`).join('');
-    
+
+    const dropdownOptions = state.signals.map(s => {
+        const selected = preset && preset.type === s.name ? 'selected' : '';
+        return `<option value="${s.name}" ${selected}>${s.name}</option>`;
+    }).join('');
+
     row.innerHTML = `
         <div class="signal-row-header">
             <select class="signal-type-select" required>
-                <option value="" disabled selected>Select signal logic...</option>
+                <option value="" disabled ${!(preset && preset.type) ? 'selected' : ''}>Select signal logic...</option>
                 ${dropdownOptions}
             </select>
             ${isRemoveable ? `
@@ -486,43 +519,23 @@ function addSignalRowItem(container, ruleType, isRemoveable = false) {
             <!-- Dynamic parameters populated on selection -->
         </div>
     `;
-    
+
     container.appendChild(row);
     lucide.createIcons();
-    
+
     const select = row.querySelector('.signal-type-select');
     const paramsGrid = row.querySelector('.signal-params-grid');
-    
-    // Parameter rendering on select change
+
     select.addEventListener('change', () => {
-        const signalName = select.value;
-        const signalMeta = state.signals.find(s => s.name === signalName);
-        paramsGrid.innerHTML = '';
-        
-        if (signalMeta && signalMeta.parameters.length > 0) {
-            signalMeta.parameters.forEach(p => {
-                const field = document.createElement('div');
-                field.className = 'signal-param-field';
-                
-                let stepStr = '1';
-                if (p.name === 'percentage') stepStr = '0.01';
-                
-                field.innerHTML = `
-                    <label>${p.name}</label>
-                    <input type="text" 
-                           data-param-name="${p.name}" 
-                           data-param-type="${p.type}"
-                           placeholder="${p.description}" 
-                           value="${p.default !== null ? p.default : ''}" 
-                           required>
-                `;
-                paramsGrid.appendChild(field);
-            });
-        } else if (signalMeta) {
-            paramsGrid.innerHTML = '<span class="input-hint">No configuration parameters required for this signal.</span>';
-        }
+        const signalMeta = state.signals.find(s => s.name === select.value);
+        fillSignalParams(paramsGrid, signalMeta, null);
     });
-    
+
+    if (preset && preset.type) {
+        const signalMeta = state.signals.find(s => s.name === preset.type);
+        fillSignalParams(paramsGrid, signalMeta, preset);
+    }
+
     if (isRemoveable) {
         row.querySelector('.btn-remove-signal-row').addEventListener('click', () => {
             row.remove();
@@ -530,88 +543,99 @@ function addSignalRowItem(container, ruleType, isRemoveable = false) {
     }
 }
 
-// Form submit event to compile config and post save request
+function populateRuleFromConfig(ruleType, rule) {
+    let op = 'SINGLE';
+    let signals = [];
+
+    if (!rule) {
+        document.getElementById(`${ruleType}-rule-op`).value = 'SINGLE';
+        renderRuleSignals(ruleType, 'SINGLE');
+        return;
+    }
+
+    if (rule.type === 'AND' || rule.type === 'OR') {
+        op = rule.type;
+        signals = rule.signals || [];
+    } else {
+        signals = [rule];
+    }
+
+    document.getElementById(`${ruleType}-rule-op`).value = op;
+    renderRuleSignals(ruleType, op, signals);
+}
+
+function loadStrategyIntoCreator(strat) {
+    state.editingFile = strat.file_name;
+    const cfg = strat.config;
+
+    document.getElementById('strat-name').value = cfg.name || '';
+    document.getElementById('strat-ticker-api').value = cfg.ticker_API || '';
+    document.getElementById('strat-ticker-data').value = cfg.ticker_data || '';
+    document.getElementById('strat-interval').value = cfg.interval || '1d';
+    document.getElementById('strat-period').value = (cfg.period || '1y').toLowerCase();
+    document.getElementById('strat-action').value = cfg.action || 'BUY';
+
+    populateRuleFromConfig('entry', cfg.entry_rule);
+    populateRuleFromConfig('exit', cfg.exit_rule);
+    updateCreatorModeUI();
+
+    document.querySelector('.nav-btn[data-tab="creator"]').click();
+    showToast("Editing Strategy", `Loaded ${cfg.name} into the creator.`, "info");
+}
+
+// Form submit event to compile config and post/put save request
 async function saveStrategy(event) {
     event.preventDefault();
     toggleLoading(true);
-    
+
     try {
-        // Compile Indicators config dict
-        const indicators = {};
-        const indicatorRows = document.querySelectorAll('#indicators-container .indicator-row');
-        indicatorRows.forEach(row => {
-            const type = row.querySelector('.indicator-select').value;
-            const valInput = row.querySelector('.indicator-val-input').value;
-            
-            // Parse comma values into individual ints/floats/tuples
-            const values = valInput.split(',').map(v => {
-                const str = v.trim();
-                // Check if Bollinger Band tuple format like (20,2) or 20;2
-                if (str.startsWith('(') && str.endsWith(')')) {
-                    const inner = str.substring(1, str.length - 1);
-                    return inner.split('-').map(Number); // standard numeric tuple conversion
-                }
-                
-                // standard number parser
-                if (isNaN(str)) return str;
-                return str.includes('.') ? parseFloat(str) : parseInt(str, 10);
-            });
-            
-            if (indicators[type]) {
-                indicators[type] = indicators[type].concat(values);
-            } else {
-                indicators[type] = values;
-            }
-        });
-        
-        // Compile Entry signal config
         const entryOp = document.getElementById('entry-rule-op').value;
         const entryRule = compileRuleConfig('entry', entryOp);
-        
-        // Compile Exit signal config
         const exitOp = document.getElementById('exit-rule-op').value;
         const exitRule = compileRuleConfig('exit', exitOp);
-        
+
         if (!entryRule || !exitRule) {
-             throw new Error("Invalid signals configured in Entry or Exit rules.");
+            throw new Error("Invalid signals configured in Entry or Exit rules.");
         }
-        
-        // Strategy payload construction
+
         const payload = {
             name: document.getElementById('strat-name').value,
             ticker_API: document.getElementById('strat-ticker-api').value,
             ticker_data: document.getElementById('strat-ticker-data').value,
-            indicators: indicators,
             interval: document.getElementById('strat-interval').value,
             period: document.getElementById('strat-period').value,
             action: document.getElementById('strat-action').value,
             entry_rule: entryRule,
             exit_rule: exitRule
         };
-        
-        const response = await fetch('/api/strategies', {
-            method: 'POST',
+
+        const isEdit = Boolean(state.editingFile);
+        const url = isEdit
+            ? `/api/strategies/${encodeURIComponent(state.editingFile)}`
+            : '/api/strategies';
+        const method = isEdit ? 'PUT' : 'POST';
+
+        const response = await fetch(url, {
+            method,
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
         });
-        
+
         if (!response.ok) {
             const errData = await response.json();
             throw new Error(errData.detail || "Failed to save strategy");
         }
-        
+
         const result = await response.json();
-        showToast("Strategy Saved", `Strategy saved as ${result.file_name} successfully!`, "success");
-        
-        // Reset form details and reload strategies list
-        document.getElementById('strategy-creator-form').reset();
-        document.getElementById('indicators-container').innerHTML = '';
-        addIndicatorRow("EMA", "10, 25");
-        renderRuleSignals("entry", "SINGLE");
-        renderRuleSignals("exit", "SINGLE");
-        
+        showToast(
+            isEdit ? "Strategy Updated" : "Strategy Saved",
+            `Strategy saved as ${result.file_name} successfully!`,
+            "success"
+        );
+
+        resetCreatorForm();
         await loadStrategies();
-        
+
     } catch (e) {
         showToast("Saving Failed", e.message, "error");
     } finally {
@@ -623,58 +647,62 @@ async function saveStrategy(event) {
 function compileRuleConfig(ruleType, op) {
     const container = document.getElementById(`${ruleType}-signals-container`);
     const rows = container.querySelectorAll('.signal-row-item');
-    
+
     if (rows.length === 0) return null;
-    
+
     const signalsList = [];
     let isValid = true;
-    
+
     rows.forEach(row => {
         const typeSelect = row.querySelector('.signal-type-select').value;
         if (!typeSelect) {
             isValid = false;
             return;
         }
-        
+
         const signalObj = { type: typeSelect };
-        
-        // Grab inputs inside parameters grid
+
         const inputs = row.querySelectorAll('.signal-params-grid input');
         inputs.forEach(input => {
             const name = input.getAttribute('data-param-name');
             const type = input.getAttribute('data-param-type');
             const rawVal = input.value.trim();
-            
-            // Cast values accordingly
+
             if (type === 'array') {
                 signalObj[name] = rawVal.split(',').map(Number);
             } else {
                 signalObj[name] = rawVal.includes('.') ? parseFloat(rawVal) : parseInt(rawVal, 10);
             }
         });
-        
+
         signalsList.push(signalObj);
     });
-    
+
     if (!isValid) return null;
-    
+
     if (op === 'SINGLE') {
         return signalsList[0];
-    } else {
-        return {
-            type: op,
-            signals: signalsList
-        };
     }
+    return {
+        type: op,
+        signals: signalsList
+    };
 }
 
 // ==========================================================================
 // SAVED STRATEGIES VIEW
 // ==========================================================================
+function formatIndicatorsPreview(indicators) {
+    if (!indicators || Object.keys(indicators).length === 0) return 'None (from rules)';
+    return Object.entries(indicators)
+        .map(([k, v]) => `${k}: [${v.map(x => Array.isArray(x) ? `(${x.join(',')})` : x).join(', ')}]`)
+        .join(' | ');
+}
+
 function renderStrategiesList() {
     const grid = document.getElementById('strategies-cards-grid');
     grid.innerHTML = '';
-    
+
     if (state.strategies.length === 0) {
         grid.innerHTML = `
             <div class="loading-state">
@@ -685,19 +713,17 @@ function renderStrategiesList() {
         lucide.createIcons();
         return;
     }
-    
+
     state.strategies.forEach(strat => {
         const card = document.createElement('div');
         card.className = 'card strat-list-card';
-        
-        // Compile indicators summary text
-        const indicatorList = Object.entries(strat.config.indicators)
-            .map(([k, v]) => `${k}: [${v.join(', ')}]`).join(' | ');
-            
-        // Rule preview compile
+
+        const indicatorList = formatIndicatorsPreview(
+            strat.derived_indicators || strat.config.indicators
+        );
         const entryText = formatRulePreview(strat.config.entry_rule);
         const exitText = formatRulePreview(strat.config.exit_rule);
-        
+
         card.innerHTML = `
             <div class="card-header justify-between">
                 <div class="flex-align">
@@ -706,7 +732,7 @@ function renderStrategiesList() {
                 </div>
                 <span class="badge-exit-sell" style="text-transform:uppercase">${strat.config.action}</span>
             </div>
-            
+
             <div class="strat-card-meta">
                 <div class="meta-item">
                     <span>Ticker</span>
@@ -717,11 +743,11 @@ function renderStrategiesList() {
                     <p>${strat.config.interval}</p>
                 </div>
                 <div class="meta-item" style="grid-column: span 2">
-                    <span>Indicators</span>
-                    <p style="font-size:12px;color:var(--text-secondary);">${indicatorList || 'None'}</p>
+                    <span>Indicators (auto)</span>
+                    <p style="font-size:12px;color:var(--text-secondary);">${indicatorList}</p>
                 </div>
             </div>
-            
+
             <div class="strat-card-rules">
                 <div class="rule-preview">
                     <i data-lucide="log-in" class="text-success"></i>
@@ -732,27 +758,31 @@ function renderStrategiesList() {
                     <span style="font-family: monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Exit: ${exitText}</span>
                 </div>
             </div>
-            
+
             <div class="strat-card-footer">
+                <button type="button" class="btn btn-secondary btn-block btn-edit-strat" data-file="${strat.file_name}">
+                    <i data-lucide="pencil"></i> Edit
+                </button>
                 <button type="button" class="btn btn-primary btn-block btn-load-strat" data-file="${strat.file_name}">
-                    <i data-lucide="play-circle"></i> Load in Backtester
+                    <i data-lucide="play-circle"></i> Backtest
                 </button>
             </div>
         `;
-        
+
         grid.appendChild(card);
-        
-        // Load in backtester click event
+
+        card.querySelector('.btn-edit-strat').addEventListener('click', () => {
+            loadStrategyIntoCreator(strat);
+        });
+
         card.querySelector('.btn-load-strat').addEventListener('click', () => {
             const dropdown = document.getElementById('strategy-select');
             dropdown.value = strat.file_name;
-            
-            // Switch tabs to backtester
             document.querySelector('.nav-btn[data-tab="backtest"]').click();
             showToast("Strategy Loaded", `Loaded ${strat.config.name} into configuration panel.`, "success");
         });
     });
-    
+
     lucide.createIcons();
 }
 

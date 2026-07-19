@@ -131,6 +131,10 @@
                     <option value="3mo">3 Months</option>
                     <option value="6mo">6 Months</option>
                     <option value="1y">1 Year</option>
+                    <option value="2y">2 Years</option>
+                    <option value="5y">5 Years</option>
+                    <option value="10y">10 Years</option>
+                    <option value="ytd">Year to Date</option>
                     <option value="max">Max Period</option>
                   </select>
                 </div>
@@ -220,10 +224,16 @@
             <form id="strategy-creator-form">
               <!-- Core Strategy settings -->
               <div class="card">
-                <div class="card-header">
-                  <i data-lucide="file-cog"></i>
-                  <h3>Strategy Parameters</h3>
+                <div class="card-header justify-between">
+                  <div class="flex-align">
+                    <i data-lucide="file-cog"></i>
+                    <h3>Strategy Parameters</h3>
+                  </div>
+                  <span id="creator-mode-badge" class="badge-exit-sell hidden">Editing</span>
                 </div>
+                <p id="creator-edit-hint" class="input-hint hidden" style="margin-bottom: 1rem;">
+                  Editing an existing strategy. Save to overwrite, or cancel to start a new one.
+                </p>
                 <div class="form-row">
                   <div class="form-group flex-1">
                     <label for="strat-name">Strategy Name</label>
@@ -259,22 +269,34 @@
                     <label for="strat-interval">Data Interval</label>
                     <select id="strat-interval" required>
                       <option value="1m">1 Minute</option>
+                      <option value="2m">2 Minutes</option>
                       <option value="5m">5 Minutes</option>
                       <option value="15m">15 Minutes</option>
                       <option value="30m">30 Minutes</option>
+                      <option value="60m">60 Minutes</option>
+                      <option value="90m">90 Minutes</option>
                       <option value="1h">1 Hour</option>
+                      <option value="4h">4 Hours (resampled from 1h)</option>
                       <option value="1d" selected>1 Day</option>
+                      <option value="5d">5 Days</option>
+                      <option value="1wk">1 Week</option>
+                      <option value="1mo">1 Month</option>
+                      <option value="3mo">3 Months</option>
                     </select>
                   </div>
                   <div class="form-group flex-1">
                     <label for="strat-period">Default Data Period</label>
                     <select id="strat-period" required>
-                      <option value="1d">1 Day (1m only)</option>
+                      <option value="1d">1 Day</option>
                       <option value="5d">5 Days</option>
                       <option value="1mo">1 Month</option>
                       <option value="3mo">3 Months</option>
                       <option value="6mo">6 Months</option>
                       <option value="1y" selected>1 Year</option>
+                      <option value="2y">2 Years</option>
+                      <option value="5y">5 Years</option>
+                      <option value="10y">10 Years</option>
+                      <option value="ytd">Year to Date</option>
                       <option value="max">Max</option>
                     </select>
                   </div>
@@ -285,26 +307,6 @@
                       <option value="SELL">SELL (Short-only)</option>
                     </select>
                   </div>
-                </div>
-              </div>
-
-              <!-- Technical Indicators configuration -->
-              <div class="card mt-4">
-                <div class="card-header justify-between">
-                  <div class="flex-align">
-                    <i data-lucide="gauge"></i>
-                    <h3>Technical Indicators</h3>
-                  </div>
-                  <button
-                    type="button"
-                    class="btn btn-secondary btn-sm"
-                    id="btn-add-indicator"
-                  >
-                    <i data-lucide="plus"></i> Add Indicator
-                  </button>
-                </div>
-                <div class="indicators-list" id="indicators-container">
-                  <!-- Dynamic indicators will be added here -->
                 </div>
               </div>
 
@@ -373,9 +375,13 @@
 
               <!-- Form actions -->
               <div class="form-actions-bar mt-4">
-                <button type="submit" class="btn btn-primary btn-lg">
+                <button type="button" id="btn-cancel-edit" class="btn btn-secondary btn-lg hidden">
+                  <i data-lucide="x"></i>
+                  <span>Cancel Edit</span>
+                </button>
+                <button type="submit" class="btn btn-primary btn-lg" id="btn-save-strategy">
                   <i data-lucide="save"></i>
-                  <span>Save Strategy Config</span>
+                  <span id="btn-save-strategy-label">Save Strategy Config</span>
                 </button>
               </div>
             </form>

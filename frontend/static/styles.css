@@ -761,6 +761,7 @@ textarea:focus {
 .form-actions-bar {
     display: flex;
     justify-content: flex-end;
+    gap: 12px;
     border-top: 1px solid var(--border-color);
     padding-top: 24px;
 }

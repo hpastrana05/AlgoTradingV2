@@ -3,8 +3,6 @@ import sys
 import logging
 import inspect
 import json
-import pandas as pd
-import yfinance as yf
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -17,6 +15,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from classes.backtesting import Backtesting
+from classes.signals import derive_indicators
 import signals.entry_exit_signals as entry_exit_signals
 
 # Setup logging
@@ -24,6 +23,33 @@ logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("FrontendAPI")
 
 app = FastAPI(title="AlgoTrading V2 Control Center")
+
+STRATEGIES_DIR = os.path.join(parent_dir, "strategies")
+
+
+def _ensure_strategies_dir():
+    if not os.path.exists(STRATEGIES_DIR):
+        os.makedirs(STRATEGIES_DIR)
+
+
+def _sanitize_file_name(name: str) -> str:
+    clean = "".join([c if c.isalnum() or c in ("-", "_") else "_" for c in name.lower()])
+    return f"{clean}.json"
+
+
+def _strategy_to_dict(strategy: "StrategyConfig") -> dict:
+    """Serialize strategy without a manual indicators block (derived at load time)."""
+    return {
+        "name": strategy.name,
+        "ticker_API": strategy.ticker_API,
+        "ticker_data": strategy.ticker_data,
+        "interval": strategy.interval,
+        "period": strategy.period,
+        "action": strategy.action,
+        "entry_rule": strategy.entry_rule,
+        "exit_rule": strategy.exit_rule,
+    }
+
 
 # Dynamic Signal Inspector Helper
 def get_signal_metadata() -> List[Dict[str, Any]]:
@@ -36,9 +62,7 @@ def get_signal_metadata() -> List[Dict[str, Any]]:
                 if param_name in ('data', 'position') or param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
                     continue
                 
-                # Determine standard defaults and type hints
                 default_val = param.default if param.default is not inspect.Parameter.empty else None
-                # Custom parameter metadata mapping for frontend UI rendering
                 input_type = "number"
                 description = f"Value for {param_name}"
                 
@@ -47,7 +71,10 @@ def get_signal_metadata() -> List[Dict[str, Any]]:
                     description = "Fast, Slow, Signal values (comma-separated, e.g. 12,26,9)"
                 elif param_name == "percentage":
                     description = "Percentage value (e.g. 2.5 for 2.5%)"
-                elif param_name in ("fast", "slow", "ema_value", "ema1", "ema2", "rsi_value", "lower", "upper"):
+                elif param_name in (
+                    "fast", "slow", "ema_value", "sma_value",
+                    "ema1", "ema2", "rsi_value", "lower", "upper",
+                ):
                     description = f"Indicator period or limit for {param_name}"
                 
                 params.append({
@@ -65,24 +92,17 @@ def get_signal_metadata() -> List[Dict[str, Any]]:
     return signals_list
 
 # API Request Models
-class RuleConfig(BaseModel):
-    type: str
-    signals: Optional[List[Dict[str, Any]]] = None
-    # For individual rules, we allow arbitrary extra fields
-    # to support the dynamic signals fields
-    class Config:
-        extra = "allow"
-
 class StrategyConfig(BaseModel):
     name: str
     ticker_API: str
     ticker_data: str
-    indicators: Dict[str, List[Any]]
     interval: str
     period: str
     action: str = "BUY"
     entry_rule: Dict[str, Any]
     exit_rule: Dict[str, Any]
+    # Optional legacy field — ignored; indicators are derived from rules
+    indicators: Optional[Dict[str, List[Any]]] = None
 
 class BacktestRequest(BaseModel):
     strategy_file: str
@@ -103,20 +123,24 @@ def api_get_signals():
 @app.get("/api/strategies")
 def api_get_strategies():
     """Scans strategies directory and returns strategy configurations."""
-    strategies_dir = os.path.join(parent_dir, "strategies")
-    if not os.path.exists(strategies_dir):
-        os.makedirs(strategies_dir)
+    _ensure_strategies_dir()
         
     strategies = []
-    for file_name in os.listdir(strategies_dir):
+    for file_name in os.listdir(STRATEGIES_DIR):
         if file_name.endswith(".json"):
-            file_path = os.path.join(strategies_dir, file_name)
+            file_path = os.path.join(STRATEGIES_DIR, file_name)
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
+                    # Attach derived indicators for UI preview
+                    derived = derive_indicators(
+                        config.get("entry_rule"),
+                        config.get("exit_rule"),
+                    )
                     strategies.append({
                         "file_name": file_name,
-                        "config": config
+                        "config": config,
+                        "derived_indicators": derived,
                     })
             except Exception as e:
                 LOGGER.warning(f"Failed to load strategy file {file_name}: {e}")
@@ -125,62 +149,77 @@ def api_get_strategies():
 @app.post("/api/strategies")
 def api_save_strategy(strategy: StrategyConfig):
     """Saves a new strategy to the strategies/ directory."""
-    strategies_dir = os.path.join(parent_dir, "strategies")
-    if not os.path.exists(strategies_dir):
-         os.makedirs(strategies_dir)
+    _ensure_strategies_dir()
          
-    # Clean up name for file name
-    clean_name = "".join([c if c.isalnum() or c in ("-", "_") else "_" for c in strategy.name.lower()])
-    file_name = f"{clean_name}.json"
-    file_path = os.path.join(strategies_dir, file_name)
+    file_name = _sanitize_file_name(strategy.name)
+    file_path = os.path.join(STRATEGIES_DIR, file_name)
+
+    if os.path.exists(file_path):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Strategy file '{file_name}' already exists. Edit it from Saved Strategies, or choose another name.",
+        )
     
     try:
         with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(strategy.dict(), f, indent=4)
+            json.dump(_strategy_to_dict(strategy), f, indent=4)
         return {"status": "success", "file_name": file_name}
     except Exception as e:
         LOGGER.error(f"Error saving strategy: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+@app.put("/api/strategies/{file_name}")
+def api_update_strategy(file_name: str, strategy: StrategyConfig):
+    """Updates an existing strategy file in place."""
+    _ensure_strategies_dir()
+
+    if not file_name.endswith(".json") or "/" in file_name or "\\" in file_name:
+        raise HTTPException(status_code=400, detail="Invalid strategy file name")
+
+    file_path = os.path.join(STRATEGIES_DIR, file_name)
+    if not os.path.exists(file_path):
+        raise HTTPException(status_code=404, detail="Strategy file not found")
+
+    try:
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(_strategy_to_dict(strategy), f, indent=4)
+        return {"status": "success", "file_name": file_name}
+    except Exception as e:
+        LOGGER.error(f"Error updating strategy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/api/backtest")
 def api_run_backtest(req: BacktestRequest):
     """Runs a backtest on the specified strategy file with parameters."""
-    strategies_dir = os.path.join(parent_dir, "strategies")
-    strat_path = os.path.join(strategies_dir, req.strategy_file)
+    strat_path = os.path.join(STRATEGIES_DIR, req.strategy_file)
     
     if not os.path.exists(strat_path):
         raise HTTPException(status_code=404, detail="Strategy file not found")
         
     try:
-        # Initialize backtester
         backtester = Backtesting(
             strategy_path=strat_path,
             initial_capital=req.capital,
             commission=req.commission
         )
         
-        # Determine data period
         data = None
         if req.period:
-            ticker = backtester.strategy_manager.position.ticker
-            interval = backtester.strategy_manager.data_manager.interval
-            LOGGER.info(f"Downloading custom backtest data: {ticker} | {interval} | {req.period}")
-            
-            data = yf.download(ticker, interval=interval, period=req.period, progress=False)
-            if isinstance(data.columns, pd.MultiIndex):
-                data.columns = data.columns.droplevel(1)
-            
+            dm = backtester.strategy_manager.data_manager
+            LOGGER.info(
+                f"Downloading custom backtest data: {dm.ticker} | {dm.interval} | {req.period}"
+            )
+            data = dm.fetch_data(dm.ticker, dm.interval, req.period)
             if data.empty:
                 LOGGER.warning("Downloaded custom data was empty, falling back to config default")
                 data = None
                 
-        # Run Backtest
         results = backtester.run_backtest(data=data)
         
         if not results:
              raise HTTPException(status_code=500, detail="Backtest completed with no results")
              
-        # Format timestamps to string to make JSON serializable
         formatted_trade_pairs = []
         for tp in results["trade_pairs"]:
             formatted_trade_pairs.append({

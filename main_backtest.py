@@ -1,7 +1,5 @@
 import logging
 import argparse
-import pandas as pd
-import yfinance as yf
 from classes.backtesting import Backtesting
 
 # Configure logging
@@ -51,15 +49,13 @@ def main():
 
     data = None
     if args.period:
-        # Fetch custom historical data based on strategy configuration
-        ticker = backtester.strategy_manager.position.ticker
-        interval = backtester.strategy_manager.data_manager.interval
-        print(f"Downloading custom historical data: {ticker} | Interval: {interval} | Period: {args.period}...")
-        
-        data = yf.download(ticker, interval=interval, period=args.period, progress=False)
-        if isinstance(data.columns, pd.MultiIndex):
-            data.columns = data.columns.droplevel(1)
-            
+        # Fetch via DataManager so resampled intervals (e.g. 4h) work
+        dm = backtester.strategy_manager.data_manager
+        print(
+            f"Downloading custom historical data: {dm.ticker} | "
+            f"Interval: {dm.interval} | Period: {args.period}..."
+        )
+        data = dm.fetch_data(dm.ticker, dm.interval, args.period)
         if data.empty:
             print("Failed to download custom data. Falling back to strategy default data.")
             data = None

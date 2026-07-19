@@ -1,0 +1,35 @@
+{
+    "name": "Polaco 4h SMA EMA",
+    "ticker_API": "None",
+    "ticker_data": "EURUSD=X",
+    "interval": "4h",
+    "period": "max",
+    "action": "BUY",
+    "entry_rule": {
+        "type": "AND",
+        "signals": [
+            {
+                "type": "ema_sma_cross_below",
+                "ema_value": 50,
+                "sma_value": 9
+            },
+            {
+                "type": "candle_above_sma",
+                "sma_value": 9
+            }
+        ]
+    },
+    "exit_rule": {
+        "type": "OR",
+        "signals": [
+            {
+                "type": "tp_percentage",
+                "percentage": 3
+            },
+            {
+                "type": "sl_percentage",
+                "percentage": 1
+            }
+        ]
+    }
+}

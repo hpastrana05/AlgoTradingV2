@@ -11,13 +11,51 @@ def ema_cross_below(data, fast, slow, *_, **__):
     cross = ta.cross(data[f"EMA_{fast}"], data[f"EMA_{slow}"], above=False, equal=False)
     return cross.iloc[-2] == 1
 
+def sma_cross_above(data, fast, slow, *_, **__):
+    """Checks when the fast SMA crosses the slow SMA from below to above"""
+    cross = ta.cross(data[f"SMA_{fast}"], data[f"SMA_{slow}"], above=True, equal=False)
+    return cross.iloc[-2] == 1
+
+def sma_cross_below(data, fast, slow, *_, **__):
+    """Checks when the fast SMA crosses the slow SMA from above to below"""
+    cross = ta.cross(data[f"SMA_{fast}"], data[f"SMA_{slow}"], above=False, equal=False)
+    return cross.iloc[-2] == 1
+
+def ema_sma_cross_above(data, ema_value, sma_value, *_, **__):
+    """Checks when EMA crosses SMA from below to above"""
+    cross = ta.cross(data[f"EMA_{ema_value}"], data[f"SMA_{sma_value}"], above=True, equal=False)
+    return cross.iloc[-2] == 1
+
+def ema_sma_cross_below(data, ema_value, sma_value, *_, **__):
+    """Checks when EMA crosses SMA from above to below"""
+    cross = ta.cross(data[f"EMA_{ema_value}"], data[f"SMA_{sma_value}"], above=False, equal=False)
+    return cross.iloc[-2] == 1
+
 def price_over_ema(data, ema_value, *_, **__):
     """Checks if the current price is above the EMA"""
     return data["Close"].iloc[-1] > data[f"EMA_{ema_value}"].iloc[-1]
 
+def price_over_sma(data, sma_value, *_, **__):
+    """Checks if the current close is above the SMA"""
+    return data["Close"].iloc[-1] > data[f"SMA_{sma_value}"].iloc[-1]
+
+def candle_above_sma(data, sma_value, *_, **__):
+    """Checks if the entire candle (low included) closed above the SMA"""
+    sma = data[f"SMA_{sma_value}"].iloc[-1]
+    return data["Low"].iloc[-1] > sma
+
+def candle_below_sma(data, sma_value, *_, **__):
+    """Checks if the entire candle (high included) closed below the SMA"""
+    sma = data[f"SMA_{sma_value}"].iloc[-1]
+    return data["High"].iloc[-1] < sma
+
 def ema_over_ema(data, ema1, ema2, *_, **__):
     """Checks if EMA1 is above EMA2"""
     return data[f"EMA_{ema1}"].iloc[-1] > data[f"EMA_{ema2}"].iloc[-1]
+
+def ema_over_sma(data, ema_value, sma_value, *_, **__):
+    """Checks if EMA is above SMA"""
+    return data[f"EMA_{ema_value}"].iloc[-1] > data[f"SMA_{sma_value}"].iloc[-1]
 
 def rsi_between(data, rsi_value, lower, upper, *_, **__):
     """Checks if the RSI is between the lower and upper thresholds"""
