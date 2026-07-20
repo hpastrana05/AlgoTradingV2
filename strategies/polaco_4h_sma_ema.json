@@ -9,13 +9,23 @@
         "type": "AND",
         "signals": [
             {
-                "type": "ema_sma_cross_below",
-                "ema_value": 50,
+                "type": "candle_above_sma",
                 "sma_value": 9
             },
             {
-                "type": "candle_above_sma",
-                "sma_value": 9
+                "type": "OR",
+                "signals": [
+                    {
+                        "type": "ema_ma_cross_below",
+                        "ema_value": 50,
+                        "ma_value": 9
+                    },
+                    {
+                        "type": "ema_ma_cross_above",
+                        "ema_value": 50,
+                        "ma_value": 9
+                    }
+                ]
             }
         ]
     },
@@ -23,12 +33,12 @@
         "type": "OR",
         "signals": [
             {
-                "type": "tp_percentage",
-                "percentage": 3
+                "type": "tp_by_ratio",
+                "loss_units": 1,
+                "win_units": 1
             },
             {
-                "type": "sl_percentage",
-                "percentage": 1
+                "type": "sl_lowest_value_last_candle"
             }
         ]
     }

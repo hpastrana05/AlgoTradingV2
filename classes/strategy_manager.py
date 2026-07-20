@@ -4,7 +4,6 @@ import logging
 from .position import Position
 from .data_manager import DataManager
 from .strategy import Strategy
-from .signals import derive_indicators
 
 LOGGER = logging.getLogger("StrategyManager")
 
@@ -29,13 +28,8 @@ class StrategyManager:
                     exit_signal=exit_rule,
                 )
 
-                # Indicators are derived from rules — no separate config needed
-                indicators = derive_indicators(entry_rule, exit_rule)
-                LOGGER.info(f"Derived indicators for '{config['name']}': {indicators}")
-
                 dm = DataManager(
                     ticker=config["ticker_data"],
-                    indicators=indicators,
                     interval=config["interval"],
                     period=config.get("period"),
                 )
@@ -56,10 +50,10 @@ class StrategyManager:
         current_price = self.data_manager.get_current_price()
 
         # If we have an active position, only check for exit
-        if self.position.entry_price is not None:
+        if self.position.is_open:
             if self.strategy.check_exit(self.data_manager.data, self.position):
                 LOGGER.info(f"Exit signal triggered for: {self.name}")
-                self.position.entry_price = None
+                self.position.close()
                 return self.position.ticker, "SELL", current_price
             return self.position.ticker, "HOLD", current_price
         
@@ -67,6 +61,11 @@ class StrategyManager:
         else:
             if self.strategy.check_entry(self.data_manager.data, self.position):
                 LOGGER.info(f"Entry signal triggered for: {self.name}")
-                self.position.entry_price = current_price
+                bar = self.data_manager.data.iloc[-1]
+                self.position.open(
+                    entry_price=current_price,
+                    candle_low=bar["Low"],
+                    candle_high=bar["High"],
+                )
                 return self.position.ticker, "BUY", current_price
             return self.position.ticker, "HOLD", current_price

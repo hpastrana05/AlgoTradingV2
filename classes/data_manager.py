@@ -1,6 +1,5 @@
 import yfinance as yf
 import pandas as pd
-import pandas_ta as ta
 import logging
 
 LOGGER = logging.getLogger("DataManager")
@@ -16,14 +15,11 @@ RESAMPLE_FROM = {
 
 
 class DataManager:
-    def __init__(self, ticker, indicators, interval, period=None):
+    def __init__(self, ticker, interval, period=None):
         self.ticker = ticker
-        # indicators dict is normally derived from entry/exit rules via derive_indicators()
-        self.indicators = indicators or {}
         self.interval = interval
         self.period = period
         self.data = self.fetch_data(ticker, interval, period)
-        self.update_indicators()
 
     def fetch_data(self, ticker, interval, period):
         fetch_interval = interval
@@ -78,45 +74,12 @@ class DataManager:
         data_len = len(self.data)
         new_data = self.fetch_data(self.ticker, self.interval, self.period)
         self.data = pd.concat([self.data, new_data]).drop_duplicates().reset_index(drop=True)
-        self.update_indicators()
         while len(self.data) > data_len:
             self.data = self.data[1:]
 
     def get_current_price(self):
         return self.data["Close"].iloc[-1]
 
-    def update_indicators(self):
-        """Compute only the indicators required by the strategy rules."""
-        for name, values in self.indicators.items():
-            for value in values:
-                col = None
-
-                if name == "EMA":
-                    col = f"EMA_{value}"
-                    if col not in self.data.columns:
-                        self.data[col] = ta.ema(self.data["Close"], length=value)
-
-                elif name == "SMA":
-                    col = f"SMA_{value}"
-                    if col not in self.data.columns:
-                        self.data[col] = ta.sma(self.data["Close"], length=value)
-
-                elif name == "RSI":
-                    col = f"RSI_{value}"
-                    if col not in self.data.columns:
-                        self.data[col] = ta.rsi(self.data["Close"], length=value)
-
-                elif name == "MACD":
-                    col = f"MACD_{value[0]}_{value[1]}_{value[2]}"
-                    if col not in self.data.columns:
-                        macd = ta.macd(self.data["Close"], value[0], value[1], value[2])
-                        self.data[col] = macd.values.tolist()
-
-                else:
-                    LOGGER.warning(
-                        f"Indicator '{name}' is not computed automatically. "
-                        "Add support in DataManager.update_indicators if a signal needs it."
-                    )
 
 """
 Yahoo Finance interval / period limits (approximate):

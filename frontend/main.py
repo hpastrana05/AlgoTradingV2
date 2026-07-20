@@ -15,7 +15,6 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from classes.backtesting import Backtesting
-from classes.signals import derive_indicators
 import signals.entry_exit_signals as entry_exit_signals
 
 # Setup logging
@@ -38,7 +37,6 @@ def _sanitize_file_name(name: str) -> str:
 
 
 def _strategy_to_dict(strategy: "StrategyConfig") -> dict:
-    """Serialize strategy without a manual indicators block (derived at load time)."""
     return {
         "name": strategy.name,
         "ticker_API": strategy.ticker_API,
@@ -55,7 +53,7 @@ def _strategy_to_dict(strategy: "StrategyConfig") -> dict:
 def get_signal_metadata() -> List[Dict[str, Any]]:
     signals_list = []
     for name, obj in inspect.getmembers(entry_exit_signals, inspect.isfunction):
-        if obj.__module__ == entry_exit_signals.__name__:
+        if obj.__module__ == entry_exit_signals.__name__ and not name.startswith("_"):
             sig = inspect.signature(obj)
             params = []
             for param_name, param in sig.parameters.items():
@@ -71,8 +69,12 @@ def get_signal_metadata() -> List[Dict[str, Any]]:
                     description = "Fast, Slow, Signal values (comma-separated, e.g. 12,26,9)"
                 elif param_name == "percentage":
                     description = "Percentage value (e.g. 2.5 for 2.5%)"
+                elif param_name == "loss_units":
+                    description = "Risk units in the ratio (e.g. 1 for 1:3 risk-reward)"
+                elif param_name == "win_units":
+                    description = "Reward units in the ratio (e.g. 3 for 1:3 risk-reward)"
                 elif param_name in (
-                    "fast", "slow", "ema_value", "sma_value",
+                    "fast", "slow", "ema_value", "sma_value", "ma_value",
                     "ema1", "ema2", "rsi_value", "lower", "upper",
                 ):
                     description = f"Indicator period or limit for {param_name}"
@@ -101,8 +103,6 @@ class StrategyConfig(BaseModel):
     action: str = "BUY"
     entry_rule: Dict[str, Any]
     exit_rule: Dict[str, Any]
-    # Optional legacy field — ignored; indicators are derived from rules
-    indicators: Optional[Dict[str, List[Any]]] = None
 
 class BacktestRequest(BaseModel):
     strategy_file: str
@@ -132,15 +132,9 @@ def api_get_strategies():
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     config = json.load(f)
-                    # Attach derived indicators for UI preview
-                    derived = derive_indicators(
-                        config.get("entry_rule"),
-                        config.get("exit_rule"),
-                    )
                     strategies.append({
                         "file_name": file_name,
                         "config": config,
-                        "derived_indicators": derived,
                     })
             except Exception as e:
                 LOGGER.warning(f"Failed to load strategy file {file_name}: {e}")

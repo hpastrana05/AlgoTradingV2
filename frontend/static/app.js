@@ -80,7 +80,7 @@ function initTabs() {
         },
         'creator': {
             title: 'Strategy Creator',
-            desc: 'Configure entry/exit signal logic. Indicators are derived automatically from your rules.'
+            desc: 'Configure entry/exit signal logic. Each signal computes its own indicators from OHLCV data.'
         },
         'strategies': {
             title: 'Saved Strategies',
@@ -383,14 +383,13 @@ function renderChart(history) {
 }
 
 // ==========================================================================
-// STRATEGY CREATOR LOGIC
+// STRATEGY CREATOR LOGIC (nested AND/OR support)
 // ==========================================================================
 function initCreator() {
     document.querySelectorAll('.rule-op-select').forEach(select => {
         select.addEventListener('change', (e) => {
             const ruleType = e.target.getAttribute('data-rule-type');
-            const op = e.target.value;
-            renderRuleSignals(ruleType, op);
+            onRuleOperatorChange(ruleType);
         });
     });
 
@@ -400,8 +399,8 @@ function initCreator() {
         showToast("Edit Cancelled", "Switched back to creating a new strategy.", "info");
     });
 
-    renderRuleSignals("entry", "SINGLE");
-    renderRuleSignals("exit", "SINGLE");
+    renderRuleBuilder('entry', null);
+    renderRuleBuilder('exit', null);
     updateCreatorModeUI();
 }
 
@@ -430,36 +429,162 @@ function resetCreatorForm() {
     document.getElementById('strategy-creator-form').reset();
     document.getElementById('entry-rule-op').value = "SINGLE";
     document.getElementById('exit-rule-op').value = "SINGLE";
-    renderRuleSignals("entry", "SINGLE");
-    renderRuleSignals("exit", "SINGLE");
+    renderRuleBuilder('entry', null);
+    renderRuleBuilder('exit', null);
     updateCreatorModeUI();
 }
 
-// Renders the signals elements inside rule containers based on operator selection
-function renderRuleSignals(ruleType, operator, presetSignals = null) {
+function onRuleOperatorChange(ruleType) {
+    const newOp = document.getElementById(`${ruleType}-rule-op`).value;
+    const current = compileRuleConfig(ruleType);
+
+    if (newOp === 'SINGLE') {
+        let single = null;
+        if (current) {
+            if (current.type === 'AND' || current.type === 'OR') {
+                single = current.signals[0] || null;
+            } else {
+                single = current;
+            }
+        }
+        renderRuleBuilder(ruleType, single);
+        return;
+    }
+
+    let preset = null;
+    if (current) {
+        if (current.type === 'AND' || current.type === 'OR') {
+            preset = { type: newOp, signals: current.signals };
+        } else {
+            preset = { type: newOp, signals: [current] };
+        }
+    } else {
+        preset = { type: newOp, signals: [null] };
+    }
+    renderRuleBuilder(ruleType, preset);
+}
+
+function renderRuleBuilder(ruleType, preset = null) {
+    const opSelect = document.getElementById(`${ruleType}-rule-op`);
     const container = document.getElementById(`${ruleType}-signals-container`);
     container.innerHTML = '';
 
-    if (operator !== 'SINGLE') {
-        const addBtn = document.createElement('button');
-        addBtn.type = 'button';
-        addBtn.className = 'btn btn-secondary btn-sm mb-3';
-        addBtn.innerHTML = '<i data-lucide="plus"></i> Add Sub-Signal';
-        container.appendChild(addBtn);
-        lucide.createIcons();
+    let op = 'SINGLE';
+    let children = [null];
 
-        addBtn.addEventListener('click', () => {
-            addSignalRowItem(container, ruleType, true);
+    if (preset) {
+        if (preset.type === 'AND' || preset.type === 'OR') {
+            op = preset.type;
+            children = preset.signals && preset.signals.length ? preset.signals : [null];
+        } else {
+            op = 'SINGLE';
+            children = [preset];
+        }
+    }
+
+    opSelect.value = op;
+
+    if (op === 'SINGLE') {
+        container.appendChild(createSignalNode(children[0], false));
+        return;
+    }
+
+    const childrenList = document.createElement('div');
+    childrenList.className = 'rule-children-list';
+    container.appendChild(createRuleToolbar(childrenList));
+    container.appendChild(childrenList);
+
+    children.forEach(child => {
+        childrenList.appendChild(createRuleNode(child, true));
+    });
+
+    lucide.createIcons();
+}
+
+function createRuleToolbar(childrenList) {
+    const toolbar = document.createElement('div');
+    toolbar.className = 'rule-toolbar';
+
+    const addSignalBtn = document.createElement('button');
+    addSignalBtn.type = 'button';
+    addSignalBtn.className = 'btn btn-secondary btn-sm';
+    addSignalBtn.innerHTML = '<i data-lucide="plus"></i> Add Signal';
+    addSignalBtn.addEventListener('click', () => {
+        childrenList.appendChild(createSignalNode(null, true));
+        lucide.createIcons();
+    });
+
+    const addGroupBtn = document.createElement('button');
+    addGroupBtn.type = 'button';
+    addGroupBtn.className = 'btn btn-secondary btn-sm';
+    addGroupBtn.innerHTML = '<i data-lucide="git-branch"></i> Add Group';
+    addGroupBtn.addEventListener('click', () => {
+        childrenList.appendChild(createGroupNode(null, true));
+        lucide.createIcons();
+    });
+
+    toolbar.appendChild(addSignalBtn);
+    toolbar.appendChild(addGroupBtn);
+    return toolbar;
+}
+
+function createRuleNode(preset, removable = true) {
+    if (preset && (preset.type === 'AND' || preset.type === 'OR')) {
+        return createGroupNode(preset, removable);
+    }
+    return createSignalNode(preset, removable);
+}
+
+function createGroupNode(preset = null, removable = true) {
+    const group = document.createElement('div');
+    group.className = 'rule-node rule-group-node';
+
+    const op = preset && (preset.type === 'AND' || preset.type === 'OR') ? preset.type : 'AND';
+    const children = preset && preset.signals && preset.signals.length ? preset.signals : [null];
+    group.dataset.op = op;
+
+    const header = document.createElement('div');
+    header.className = 'rule-node-header';
+    header.innerHTML = `
+        <div class="flex-align" style="gap: 10px;">
+            <span class="rule-node-label">Group</span>
+            <select class="rule-group-op" required>
+                <option value="AND" ${op === 'AND' ? 'selected' : ''}>AND</option>
+                <option value="OR" ${op === 'OR' ? 'selected' : ''}>OR</option>
+            </select>
+        </div>
+        ${removable ? `
+            <button type="button" class="icon-btn-danger btn-remove-rule-node" title="Remove group">
+                <i data-lucide="x-circle"></i>
+            </button>
+        ` : ''}
+    `;
+
+    const childrenList = document.createElement('div');
+    childrenList.className = 'rule-children-list';
+
+    const toolbar = createRuleToolbar(childrenList);
+
+    group.appendChild(header);
+    group.appendChild(toolbar);
+    group.appendChild(childrenList);
+
+    children.forEach(child => {
+        childrenList.appendChild(createRuleNode(child, true));
+    });
+
+    const opSelect = header.querySelector('.rule-group-op');
+    opSelect.addEventListener('change', () => {
+        group.dataset.op = opSelect.value;
+    });
+
+    if (removable) {
+        header.querySelector('.btn-remove-rule-node').addEventListener('click', () => {
+            group.remove();
         });
     }
 
-    const signals = presetSignals && presetSignals.length
-        ? presetSignals
-        : [null];
-
-    signals.forEach((preset) => {
-        addSignalRowItem(container, ruleType, operator !== 'SINGLE', preset);
-    });
+    return group;
 }
 
 function fillSignalParams(paramsGrid, signalMeta, preset = null) {
@@ -493,10 +618,9 @@ function fillSignalParams(paramsGrid, signalMeta, preset = null) {
     }
 }
 
-// Adds one signal row builder. Optional preset fills type + params (edit mode).
-function addSignalRowItem(container, ruleType, isRemoveable = false, preset = null) {
+function createSignalNode(preset = null, removable = false) {
     const row = document.createElement('div');
-    row.className = 'signal-row-item';
+    row.className = 'rule-node rule-signal-node';
 
     const dropdownOptions = state.signals.map(s => {
         const selected = preset && preset.type === s.name ? 'selected' : '';
@@ -504,24 +628,22 @@ function addSignalRowItem(container, ruleType, isRemoveable = false, preset = nu
     }).join('');
 
     row.innerHTML = `
-        <div class="signal-row-header">
-            <select class="signal-type-select" required>
-                <option value="" disabled ${!(preset && preset.type) ? 'selected' : ''}>Select signal logic...</option>
-                ${dropdownOptions}
-            </select>
-            ${isRemoveable ? `
-                <button type="button" class="icon-btn-danger btn-remove-signal-row">
+        <div class="rule-node-header">
+            <div class="flex-align" style="gap: 10px; flex: 1;">
+                <span class="rule-node-label">Signal</span>
+                <select class="signal-type-select" required style="flex: 1; max-width: 280px;">
+                    <option value="" disabled ${!(preset && preset.type) ? 'selected' : ''}>Select signal logic...</option>
+                    ${dropdownOptions}
+                </select>
+            </div>
+            ${removable ? `
+                <button type="button" class="icon-btn-danger btn-remove-rule-node" title="Remove signal">
                     <i data-lucide="x-circle"></i>
                 </button>
             ` : ''}
         </div>
-        <div class="signal-params-grid">
-            <!-- Dynamic parameters populated on selection -->
-        </div>
+        <div class="signal-params-grid"></div>
     `;
-
-    container.appendChild(row);
-    lucide.createIcons();
 
     const select = row.querySelector('.signal-type-select');
     const paramsGrid = row.querySelector('.signal-params-grid');
@@ -536,32 +658,17 @@ function addSignalRowItem(container, ruleType, isRemoveable = false, preset = nu
         fillSignalParams(paramsGrid, signalMeta, preset);
     }
 
-    if (isRemoveable) {
-        row.querySelector('.btn-remove-signal-row').addEventListener('click', () => {
+    if (removable) {
+        row.querySelector('.btn-remove-rule-node').addEventListener('click', () => {
             row.remove();
         });
     }
+
+    return row;
 }
 
 function populateRuleFromConfig(ruleType, rule) {
-    let op = 'SINGLE';
-    let signals = [];
-
-    if (!rule) {
-        document.getElementById(`${ruleType}-rule-op`).value = 'SINGLE';
-        renderRuleSignals(ruleType, 'SINGLE');
-        return;
-    }
-
-    if (rule.type === 'AND' || rule.type === 'OR') {
-        op = rule.type;
-        signals = rule.signals || [];
-    } else {
-        signals = [rule];
-    }
-
-    document.getElementById(`${ruleType}-rule-op`).value = op;
-    renderRuleSignals(ruleType, op, signals);
+    renderRuleBuilder(ruleType, rule || null);
 }
 
 function loadStrategyIntoCreator(strat) {
@@ -583,16 +690,13 @@ function loadStrategyIntoCreator(strat) {
     showToast("Editing Strategy", `Loaded ${cfg.name} into the creator.`, "info");
 }
 
-// Form submit event to compile config and post/put save request
 async function saveStrategy(event) {
     event.preventDefault();
     toggleLoading(true);
 
     try {
-        const entryOp = document.getElementById('entry-rule-op').value;
-        const entryRule = compileRuleConfig('entry', entryOp);
-        const exitOp = document.getElementById('exit-rule-op').value;
-        const exitRule = compileRuleConfig('exit', exitOp);
+        const entryRule = compileRuleConfig('entry');
+        const exitRule = compileRuleConfig('exit');
 
         if (!entryRule || !exitRule) {
             throw new Error("Invalid signals configured in Entry or Exit rules.");
@@ -643,62 +747,79 @@ async function saveStrategy(event) {
     }
 }
 
-// Compile signals layout inside containers into nested JSON objects
-function compileRuleConfig(ruleType, op) {
+function compileRuleConfig(ruleType) {
+    const op = document.getElementById(`${ruleType}-rule-op`).value;
     const container = document.getElementById(`${ruleType}-signals-container`);
-    const rows = container.querySelectorAll('.signal-row-item');
-
-    if (rows.length === 0) return null;
-
-    const signalsList = [];
-    let isValid = true;
-
-    rows.forEach(row => {
-        const typeSelect = row.querySelector('.signal-type-select').value;
-        if (!typeSelect) {
-            isValid = false;
-            return;
-        }
-
-        const signalObj = { type: typeSelect };
-
-        const inputs = row.querySelectorAll('.signal-params-grid input');
-        inputs.forEach(input => {
-            const name = input.getAttribute('data-param-name');
-            const type = input.getAttribute('data-param-type');
-            const rawVal = input.value.trim();
-
-            if (type === 'array') {
-                signalObj[name] = rawVal.split(',').map(Number);
-            } else {
-                signalObj[name] = rawVal.includes('.') ? parseFloat(rawVal) : parseInt(rawVal, 10);
-            }
-        });
-
-        signalsList.push(signalObj);
-    });
-
-    if (!isValid) return null;
 
     if (op === 'SINGLE') {
-        return signalsList[0];
+        const signalNode = container.querySelector(':scope > .rule-signal-node');
+        return signalNode ? compileSignalNode(signalNode) : null;
     }
-    return {
-        type: op,
-        signals: signalsList
-    };
+
+    const childrenList = container.querySelector(':scope > .rule-children-list');
+    if (!childrenList) return null;
+
+    const signals = [];
+    let isValid = true;
+
+    childrenList.querySelectorAll(':scope > .rule-node').forEach(node => {
+        const compiled = compileRuleNode(node);
+        if (!compiled) isValid = false;
+        else signals.push(compiled);
+    });
+
+    if (!isValid || signals.length === 0) return null;
+    return { type: op, signals };
+}
+
+function compileRuleNode(nodeEl) {
+    if (nodeEl.classList.contains('rule-signal-node')) {
+        return compileSignalNode(nodeEl);
+    }
+
+    if (nodeEl.classList.contains('rule-group-node')) {
+        const op = nodeEl.querySelector('.rule-group-op').value;
+        const childrenList = nodeEl.querySelector(':scope > .rule-children-list');
+        const signals = [];
+        let isValid = true;
+
+        childrenList.querySelectorAll(':scope > .rule-node').forEach(child => {
+            const compiled = compileRuleNode(child);
+            if (!compiled) isValid = false;
+            else signals.push(compiled);
+        });
+
+        if (!isValid || signals.length === 0) return null;
+        return { type: op, signals };
+    }
+
+    return null;
+}
+
+function compileSignalNode(signalNode) {
+    const typeSelect = signalNode.querySelector('.signal-type-select');
+    if (!typeSelect || !typeSelect.value) return null;
+
+    const signalObj = { type: typeSelect.value };
+
+    signalNode.querySelectorAll('.signal-params-grid input').forEach(input => {
+        const name = input.getAttribute('data-param-name');
+        const type = input.getAttribute('data-param-type');
+        const rawVal = input.value.trim();
+
+        if (type === 'array') {
+            signalObj[name] = rawVal.split(',').map(v => Number(v.trim()));
+        } else {
+            signalObj[name] = rawVal.includes('.') ? parseFloat(rawVal) : parseInt(rawVal, 10);
+        }
+    });
+
+    return signalObj;
 }
 
 // ==========================================================================
 // SAVED STRATEGIES VIEW
 // ==========================================================================
-function formatIndicatorsPreview(indicators) {
-    if (!indicators || Object.keys(indicators).length === 0) return 'None (from rules)';
-    return Object.entries(indicators)
-        .map(([k, v]) => `${k}: [${v.map(x => Array.isArray(x) ? `(${x.join(',')})` : x).join(', ')}]`)
-        .join(' | ');
-}
-
 function renderStrategiesList() {
     const grid = document.getElementById('strategies-cards-grid');
     grid.innerHTML = '';
@@ -718,9 +839,6 @@ function renderStrategiesList() {
         const card = document.createElement('div');
         card.className = 'card strat-list-card';
 
-        const indicatorList = formatIndicatorsPreview(
-            strat.derived_indicators || strat.config.indicators
-        );
         const entryText = formatRulePreview(strat.config.entry_rule);
         const exitText = formatRulePreview(strat.config.exit_rule);
 
@@ -742,9 +860,9 @@ function renderStrategiesList() {
                     <span>Interval</span>
                     <p>${strat.config.interval}</p>
                 </div>
-                <div class="meta-item" style="grid-column: span 2">
-                    <span>Indicators (auto)</span>
-                    <p style="font-size:12px;color:var(--text-secondary);">${indicatorList}</p>
+                <div class="meta-item">
+                    <span>Period</span>
+                    <p>${strat.config.period || '—'}</p>
                 </div>
             </div>
 
@@ -789,7 +907,7 @@ function renderStrategiesList() {
 function formatRulePreview(rule) {
     if (!rule) return 'None';
     if (rule.type === 'AND' || rule.type === 'OR') {
-        const subList = rule.signals.map(s => s.type).join(`, ${rule.type} `);
+        const subList = (rule.signals || []).map(s => formatRulePreview(s)).join(', ');
         return `${rule.type}(${subList})`;
     }
     return rule.type;

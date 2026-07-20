@@ -690,13 +690,80 @@ textarea:focus {
 }
 
 .signals-builder-container:empty::before {
-    content: 'Add dynamic signals by setting the Logic Operator';
+    content: 'Configure the root logic operator above';
     display: flex;
     align-items: center;
     justify-content: center;
     height: 80px;
     color: var(--text-muted);
     font-size: 13px;
+}
+
+.rule-children-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.rule-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 10px;
+}
+
+.rule-node {
+    animation: slideIn 0.25s ease-out;
+}
+
+.rule-group-node {
+    background-color: hsl(223, 47%, 6%);
+    border: 1px solid var(--border-color);
+    border-left: 3px solid var(--primary);
+    border-radius: 10px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.rule-group-node[data-op="OR"] {
+    border-left-color: var(--secondary);
+}
+
+.rule-node-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+}
+
+.rule-node-header select {
+    padding: 6px 12px;
+    font-size: 13px;
+}
+
+.rule-group-op {
+    width: 120px;
+    font-weight: 600;
+}
+
+.rule-node-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    color: var(--text-muted);
+    letter-spacing: 0.04em;
+}
+
+.rule-signal-node {
+    background-color: var(--bg-card-hover);
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
 }
 
 .signal-row-item {

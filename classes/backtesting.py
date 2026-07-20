@@ -16,22 +16,18 @@ class Backtesting:
     def run_backtest(self, data=None):
         """
         Runs the backtest on the provided data or the data fetched by the data manager.
-        If data is a pandas DataFrame, we update the data manager's data and update indicators.
+        If data is a pandas DataFrame, we update the data manager's data.
         """
-        # If external data is provided, set it and calculate indicators
         if data is not None:
-            # We copy data to avoid mutating original
             self.strategy_manager.data_manager.data = data.copy()
-            self.strategy_manager.data_manager.update_indicators()
 
-        # Get full data with indicators calculated
         full_data = self.strategy_manager.data_manager.data
         if full_data is None or full_data.empty:
             LOGGER.error("No historical data available for backtesting.")
             return None
 
         # Reset position in strategy manager
-        self.strategy_manager.position.entry_price = None
+        self.strategy_manager.position.close()
 
         cash = self.initial_capital
         shares = 0.0
@@ -46,9 +42,8 @@ class Backtesting:
             # This simulates real-time data arriving bar-by-bar and prevents look-ahead bias.
             slice_df = full_data.iloc[:i+1]
             
-            # Skip rows where there are NaNs in indicators (warming up period)
             current_row = slice_df.iloc[-1]
-            if current_row.isna().any():
+            if pd.isna(current_row["Close"]):
                 continue
 
             # Update the strategy manager's view of the data
@@ -65,9 +60,6 @@ class Backtesting:
                 portfolio_val_before = cash
                 cash = 0.0
                 position_active = True
-                
-                # Make sure the strategy manager knows the entry price
-                self.strategy_manager.position.entry_price = price
                 
                 trades.append({
                     "type": "BUY",
@@ -87,8 +79,8 @@ class Backtesting:
                 shares = 0.0
                 position_active = False
                 
-                # Reset entry price in strategy manager
-                self.strategy_manager.position.entry_price = None
+                # Reset entry state in strategy manager
+                self.strategy_manager.position.close()
                 
                 trades.append({
                     "type": "SELL",
@@ -120,7 +112,7 @@ class Backtesting:
             old_shares = shares
             shares = 0.0
             position_active = False
-            self.strategy_manager.position.entry_price = None
+            self.strategy_manager.position.close()
             
             trades.append({
                 "type": "FORCE_SELL",
