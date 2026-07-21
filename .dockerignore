@@ -1,0 +1,25 @@
+# Ignore build context noise (keeps Pi builds faster)
+.git
+.github
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.py[cod]
+*.egg-info
+.mypy_cache
+.ruff_cache
+.pytest_cache
+.cursor
+.claude
+*.md
+docs
+logs/*
+!logs/.gitkeep
+.env
+.env.*
+!.env.example
+Dockerfile
+docker-compose*.yml
+.dockerignore

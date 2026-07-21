@@ -32,6 +32,31 @@ For running the UI
 
 `.venv\Scripts\uvicorn frontend.main:app --reload`
 
+## Docker (Raspberry Pi / server)
+
+Requires **64-bit** Raspberry Pi OS (Pi 4/5 recommended). First build on the Pi can take 10–30+ minutes.
+
+```bash
+# On the Pi
+sudo apt update && sudo apt install -y git docker.io docker-compose-v2
+sudo usermod -aG docker $USER   # then log out/in
+
+git clone <your-repo-url> AlgoTradingV2
+cd AlgoTradingV2
+cp .env.example .env            # add Trading212 API keys
+docker compose up -d --build
+```
+
+Open `http://<pi-ip>:8000`. Useful commands:
+
+```bash
+docker compose logs -f
+docker compose restart
+docker compose down
+```
+
+Strategies are bind-mounted from `./strategies` (edit on the host without rebuilding).
+
 ## Strategies
 
 For creating strategies, we need to create a JSON file in the strategies folder which contains the data for the strategy.
