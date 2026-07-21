@@ -114,6 +114,8 @@ def get_signal_metadata() -> List[Dict[str, Any]]:
                     description = "Extra % of the anchor candle range required beyond high/low for breakout"
                 elif param_name == "retest_tolerance_pct":
                     description = "% of the anchor candle range allowed when retesting the broken level"
+                elif param_name in ("flatten_hour", "flatten_minute"):
+                    description = f"Same-day flatten time ({param_name}), Europe/Madrid"
                 
                 params.append({
                     "name": param_name,
@@ -145,6 +147,7 @@ class BacktestRequest(BaseModel):
     strategy_file: str
     capital: float = Field(default=10000.0, ge=1.0)
     commission: float = Field(default=0.001, ge=0.0, le=1.0)
+    risk_pct: float = Field(default=1.0, ge=0.01, le=100.0)
     period: Optional[str] = None
     ticker: Optional[str] = None
     interval: Optional[str] = None
@@ -252,6 +255,7 @@ def api_run_backtest(req: BacktestRequest):
             strategy_path=strat_path,
             initial_capital=req.capital,
             commission=req.commission,
+            risk_pct=req.risk_pct / 100.0,
             ticker=ticker_override,
             period=period_override,
             interval=interval_override,

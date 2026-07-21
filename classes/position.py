@@ -19,6 +19,10 @@ class Position:
         # Set by entry signals before open() (e.g. long vs short retest)
         self.intended_action = None
 
+        # Set by exit signals so the engine can fill at SL/TP/EOD instead of close
+        self.exit_fill_price = None
+        self.exit_reason = None  # "SL" | "TP" | "EOD"
+
         # Anchor-candle breakout + retest strategy state
         self.reset_session_state()
 
@@ -38,6 +42,8 @@ class Position:
         self.stop_loss_price = None
         self.take_profit_price = None
         self.intended_action = None
+        self.exit_fill_price = None
+        self.exit_reason = None
 
     def open(self, entry_price, candle_low, candle_high, action=None):
         if action:
@@ -49,6 +55,8 @@ class Position:
         self.entry_candle_low = candle_low
         self.entry_candle_high = candle_high
         self.intended_action = None
+        self.exit_fill_price = None
+        self.exit_reason = None
 
     def close(self):
         self.entry_price = None

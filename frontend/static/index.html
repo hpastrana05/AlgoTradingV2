@@ -125,6 +125,19 @@
                 </div>
 
                 <div class="form-group form-group-sm">
+                  <label for="backtest-risk">Risk / Trade (%)</label>
+                  <input
+                    type="number"
+                    id="backtest-risk"
+                    value="1"
+                    min="0.01"
+                    max="100"
+                    step="0.01"
+                    required
+                  />
+                </div>
+
+                <div class="form-group form-group-sm">
                   <label for="backtest-period">Period</label>
                   <select id="backtest-period">
                     <option value="">Default</option>
@@ -273,17 +286,18 @@
                   <thead>
                     <tr>
                       <th>Trade Pair</th>
-                      <th>Buy Time</th>
-                      <th>Buy Price</th>
-                      <th>Sell Time</th>
-                      <th>Sell Price</th>
+                      <th>Side</th>
+                      <th>Entry Time</th>
+                      <th>Entry Price</th>
+                      <th>Exit Time</th>
+                      <th>Exit Price</th>
                       <th>Trade PnL ($)</th>
                       <th>Return (%)</th>
                     </tr>
                   </thead>
                   <tbody>
                     <tr class="empty-state-row">
-                      <td colspan="7">
+                      <td colspan="8">
                         No simulation data loaded. Select options above and
                         click "Run Simulation".
                       </td>

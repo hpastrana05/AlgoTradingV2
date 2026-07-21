@@ -120,6 +120,8 @@ class DataManager:
             )
             return data
 
+        data = self._ensure_madrid_timezone(data)
+
         if resample_rule is not None:
             data = self._resample_ohlcv(data, resample_rule)
             if data.empty:
@@ -127,8 +129,28 @@ class DataManager:
                     f"Resampling to {interval} produced empty data for {ticker} "
                     f"(source interval {fetch_interval}, period {resolved_period})"
                 )
+            else:
+                data = self._ensure_madrid_timezone(data)
 
         return data
+
+    @staticmethod
+    def _ensure_madrid_timezone(data):
+        """
+        Normalize bar timestamps to Europe/Madrid so session strategies
+        (15:30 open candle, deadlines, EOD flatten) operate in Madrid time.
+        """
+        if data is None or data.empty:
+            return data
+        df = data.copy()
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+        if df.index.tz is None:
+            # yfinance occasionally returns naive stamps; treat as UTC then convert.
+            df.index = df.index.tz_localize("UTC").tz_convert("Europe/Madrid")
+        else:
+            df.index = df.index.tz_convert("Europe/Madrid")
+        return df
 
     @staticmethod
     def _resample_ohlcv(data, rule):

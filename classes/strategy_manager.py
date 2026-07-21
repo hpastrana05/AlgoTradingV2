@@ -88,10 +88,14 @@ class StrategyManager:
         if self.position.is_open:
             if self.strategy.check_exit(self.data_manager.data, self.position):
                 LOGGER.info(f"Exit signal triggered for: {self.name}")
+                fill_price = self.position.exit_fill_price
+                if fill_price is None:
+                    fill_price = current_price
+                exit_reason = self.position.exit_reason
                 close_action = "SELL" if self.position.action == "BUY" else "BUY"
                 self.position.close()
-                return broker_ticker, close_action, current_price
-            return broker_ticker, "HOLD", current_price
+                return broker_ticker, close_action, float(fill_price), exit_reason
+            return broker_ticker, "HOLD", current_price, None
 
         # If we do not have an active position, only check for entry
         else:
@@ -105,5 +109,5 @@ class StrategyManager:
                     candle_high=bar["High"],
                     action=entry_action,
                 )
-                return broker_ticker, entry_action, current_price
-            return broker_ticker, "HOLD", current_price
+                return broker_ticker, entry_action, current_price, None
+            return broker_ticker, "HOLD", current_price, None

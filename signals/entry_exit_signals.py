@@ -212,12 +212,18 @@ def tp_percentage(data, percentage, position, *_, **__):
     percentage = percentage / 100
 
     if position.action == "BUY":
-        stop_price = entry * (1 + percentage)
-        return data["Close"].iloc[-1] >= stop_price
+        tp_price = entry * (1 + percentage)
+        if data["Close"].iloc[-1] >= tp_price:
+            _arm_exit(position, data, tp_price, "TP", is_stop=False)
+            return True
+        return False
 
     elif position.action == "SELL":
-        stop_price = entry * (1 - percentage)
-        return data["Close"].iloc[-1] <= stop_price
+        tp_price = entry * (1 - percentage)
+        if data["Close"].iloc[-1] <= tp_price:
+            _arm_exit(position, data, tp_price, "TP", is_stop=False)
+            return True
+        return False
 
     else:
         return False
@@ -232,11 +238,17 @@ def sl_percentage(data, percentage, position, *_, **__):
 
     if position.action == "BUY":
         stop_price = entry * (1 - percentage)
-        return data["Close"].iloc[-1] <= stop_price
+        if data["Close"].iloc[-1] <= stop_price:
+            _arm_exit(position, data, stop_price, "SL", is_stop=True)
+            return True
+        return False
 
     elif position.action == "SELL":
         stop_price = entry * (1 + percentage)
-        return data["Close"].iloc[-1] >= stop_price
+        if data["Close"].iloc[-1] >= stop_price:
+            _arm_exit(position, data, stop_price, "SL", is_stop=True)
+            return True
+        return False
 
     else:
         return False
@@ -250,12 +262,20 @@ def sl_lowest_value_last_candle(data, position, *_, **__):
     if position.action == "BUY":
         if position.entry_candle_low is None:
             return False
-        return data["Low"].iloc[-1] <= position.entry_candle_low
+        level = position.entry_candle_low
+        if data["Low"].iloc[-1] <= level:
+            _arm_exit(position, data, level, "SL", is_stop=True)
+            return True
+        return False
 
     if position.action == "SELL":
         if position.entry_candle_high is None:
             return False
-        return data["High"].iloc[-1] >= position.entry_candle_high
+        level = position.entry_candle_high
+        if data["High"].iloc[-1] >= level:
+            _arm_exit(position, data, level, "SL", is_stop=True)
+            return True
+        return False
 
     return False
 
@@ -300,10 +320,16 @@ def tp_by_ratio(data, loss_units=1, win_units=3, position=None, *_, **__):
         return False
 
     if position.action == "BUY":
-        return data["High"].iloc[-1] >= tp_price
+        if data["High"].iloc[-1] >= tp_price:
+            _arm_exit(position, data, tp_price, "TP", is_stop=False)
+            return True
+        return False
 
     if position.action == "SELL":
-        return data["Low"].iloc[-1] <= tp_price
+        if data["Low"].iloc[-1] <= tp_price:
+            _arm_exit(position, data, tp_price, "TP", is_stop=False)
+            return True
+        return False
 
     return False
 
@@ -448,6 +474,32 @@ def _update_anchor_breakout(data, position, breakout_buffer_pct=0, side=None):
         position.breakout_bar_ts = current_ts
 
 
+def _invalidate_failed_breakout(data, position):
+    """
+    Clear a breakout if price closes back through the broken level.
+
+    Without this, a failed breakout (close back inside the anchor range) can
+    still produce a later 'retest' entry — which is not a valid setup.
+    """
+    if position.breakout_side is None or position.session_high is None:
+        return
+
+    # Never invalidate on the breakout bar itself
+    current_ts = data.index[-1]
+    if position.breakout_bar_ts is not None and current_ts <= position.breakout_bar_ts:
+        return
+
+    close = float(data["Close"].iloc[-1])
+    if position.breakout_side == "BUY" and close <= position.session_high:
+        position.breakout_side = None
+        position.breakout_level = None
+        position.breakout_bar_ts = None
+    elif position.breakout_side == "SELL" and close >= position.session_low:
+        position.breakout_side = None
+        position.breakout_level = None
+        position.breakout_bar_ts = None
+
+
 def _prepare_anchor_trade(position, side, entry, win_units, loss_units):
     """SL at anchor mid, TP by risk-reward ratio."""
     sl = position.session_mid
@@ -485,7 +537,7 @@ def session_retest_long(
     entry_deadline_hour=16,
     entry_deadline_minute=15,
     breakout_buffer_pct=0,
-    retest_tolerance_pct=15,
+    retest_tolerance_pct=0,
     win_units=2,
     loss_units=1,
     *_,
@@ -495,6 +547,9 @@ def session_retest_long(
     Long after breakout above the anchor candle high:
     1) A candle must close clearly above the anchor high (breakout).
     2) Later, price retests that high and closes back above it.
+    3) If price closes back at/below the high before entry, the breakout is
+       invalidated and a fresh breakout is required.
+    4) The retest candle must not trade below the anchor midpoint (SL).
 
     SL: midpoint of the anchor range. TP: win_units:loss_units (default 1:2).
     All clock times are Europe/Madrid. Abandons after entry_deadline.
@@ -513,6 +568,7 @@ def session_retest_long(
     if _check_entry_deadline(data, position, entry_deadline_hour, entry_deadline_minute):
         return False
 
+    _invalidate_failed_breakout(data, position)
     _update_anchor_breakout(data, position, breakout_buffer_pct, side="BUY")
 
     if position.breakout_side != "BUY":
@@ -526,8 +582,13 @@ def session_retest_long(
     close = float(bar["Close"])
     low = float(bar["Low"])
     level = position.session_high
+    mid = position.session_mid
     rng = _anchor_range(position)
-    if rng is None:
+    if rng is None or mid is None:
+        return False
+
+    # Retest that already stabbed through the mid stop is not a valid entry.
+    if low < mid:
         return False
 
     tolerance = rng * (retest_tolerance_pct / 100.0)
@@ -548,7 +609,7 @@ def session_retest_short(
     entry_deadline_hour=16,
     entry_deadline_minute=15,
     breakout_buffer_pct=0,
-    retest_tolerance_pct=15,
+    retest_tolerance_pct=0,
     win_units=2,
     loss_units=1,
     *_,
@@ -558,6 +619,9 @@ def session_retest_short(
     Short after breakout below the anchor candle low:
     1) A candle must close clearly below the anchor low (breakout).
     2) Later, price retests that low and closes back below it.
+    3) If price closes back at/above the low before entry, the breakout is
+       invalidated and a fresh breakout is required.
+    4) The retest candle must not trade above the anchor midpoint (SL).
 
     SL: midpoint of the anchor range. TP: win_units:loss_units (default 1:2).
     All clock times are Europe/Madrid. Abandons after entry_deadline.
@@ -576,6 +640,7 @@ def session_retest_short(
     if _check_entry_deadline(data, position, entry_deadline_hour, entry_deadline_minute):
         return False
 
+    _invalidate_failed_breakout(data, position)
     _update_anchor_breakout(data, position, breakout_buffer_pct, side="SELL")
 
     if position.breakout_side != "SELL":
@@ -589,8 +654,13 @@ def session_retest_short(
     close = float(bar["Close"])
     high = float(bar["High"])
     level = position.session_low
+    mid = position.session_mid
     rng = _anchor_range(position)
-    if rng is None:
+    if rng is None or mid is None:
+        return False
+
+    # Retest that already stabbed through the mid stop is not a valid entry.
+    if high > mid:
         return False
 
     tolerance = rng * (retest_tolerance_pct / 100.0)
@@ -603,6 +673,28 @@ def session_retest_short(
     return _prepare_anchor_trade(position, "SELL", close, win_units, loss_units)
 
 
+def _gap_aware_fill(data, level, action, is_stop):
+    """
+    Fill at the level unless the bar opened through it (gap), then use Open.
+    action is the position side: BUY (long) or SELL (short).
+    """
+    open_px = float(data["Open"].iloc[-1])
+    if action == "BUY":
+        if is_stop:
+            return open_px if open_px < level else level
+        return open_px if open_px > level else level
+    if action == "SELL":
+        if is_stop:
+            return open_px if open_px > level else level
+        return open_px if open_px < level else level
+    return float(data["Close"].iloc[-1])
+
+
+def _arm_exit(position, data, level, reason, is_stop):
+    position.exit_fill_price = _gap_aware_fill(data, level, position.action, is_stop)
+    position.exit_reason = reason
+
+
 def sl_session_mid(data, position, *_, **__):
     """Stop loss at the anchor range midpoint (set on entry)."""
     if position is None or not position.is_open or position.stop_loss_price is None:
@@ -611,10 +703,16 @@ def sl_session_mid(data, position, *_, **__):
     sl = position.stop_loss_price
 
     if position.action == "BUY":
-        return float(data["Low"].iloc[-1]) <= sl
+        if float(data["Low"].iloc[-1]) <= sl:
+            _arm_exit(position, data, sl, "SL", is_stop=True)
+            return True
+        return False
 
     if position.action == "SELL":
-        return float(data["High"].iloc[-1]) >= sl
+        if float(data["High"].iloc[-1]) >= sl:
+            _arm_exit(position, data, sl, "SL", is_stop=True)
+            return True
+        return False
 
     return False
 
@@ -627,10 +725,41 @@ def tp_session_ratio(data, position, *_, **__):
     tp = position.take_profit_price
 
     if position.action == "BUY":
-        return float(data["High"].iloc[-1]) >= tp
+        if float(data["High"].iloc[-1]) >= tp:
+            _arm_exit(position, data, tp, "TP", is_stop=False)
+            return True
+        return False
 
     if position.action == "SELL":
-        return float(data["Low"].iloc[-1]) <= tp
+        if float(data["Low"].iloc[-1]) <= tp:
+            _arm_exit(position, data, tp, "TP", is_stop=False)
+            return True
+        return False
 
     return False
+
+
+def flatten_session_eod(
+    data,
+    position,
+    flatten_hour=21,
+    flatten_minute=45,
+    *_,
+    **__,
+):
+    """
+    Force-close any open position at/after the session flatten time (Europe/Madrid).
+
+    Default 21:45 Madrid = the 15:45–16:00 America/New_York bar (US cash close).
+    Fill at the bar close.
+    """
+    if position is None or not position.is_open:
+        return False
+
+    if _local_bar_minutes(data.index) < flatten_hour * 60 + flatten_minute:
+        return False
+
+    position.exit_fill_price = float(data["Close"].iloc[-1])
+    position.exit_reason = "EOD"
+    return True
 

@@ -32,6 +32,12 @@ def main():
         help="Commission rate per trade (e.g. 0.001 for 0.1%)."
     )
     parser.add_argument(
+        "--risk-pct",
+        type=float,
+        default=0.01,
+        help="Fraction of equity risked to the stop per trade (e.g. 0.01 for 1%).",
+    )
+    parser.add_argument(
         "--period", 
         type=str, 
         default=None, 
@@ -69,6 +75,7 @@ def main():
         strategy_path=args.strategy,
         initial_capital=args.capital,
         commission=args.commission,
+        risk_pct=args.risk_pct,
         ticker=ticker,
         period=period,
         interval=interval,

@@ -16,6 +16,7 @@ class Backtesting:
         ticker=None,
         period=None,
         interval=None,
+        risk_pct=0.01,
     ):
         self.strategy_manager = StrategyManager.from_json(
             strategy_path,
@@ -25,6 +26,36 @@ class Backtesting:
         )
         self.initial_capital = initial_capital
         self.commission = commission
+        # Fraction of equity risked to the stop on each trade (e.g. 0.01 = 1%).
+        # When no stop is set, falls back to full capital.
+        self.risk_pct = risk_pct
+
+    def _size_shares(self, cash, price, stop_loss_price):
+        """Risk-based size capped at available cash (1x)."""
+        if price <= 0 or cash <= 0:
+            return 0.0
+
+        max_shares = (cash * (1.0 - self.commission)) / price
+        if stop_loss_price is None:
+            return max_shares
+
+        risk_per_share = abs(price - float(stop_loss_price))
+        if risk_per_share <= 0:
+            return max_shares
+
+        risk_budget = cash * self.risk_pct
+        return min(risk_budget / risk_per_share, max_shares)
+
+    @staticmethod
+    def _exit_trade_type(position_side, exit_reason):
+        is_long = position_side == "LONG"
+        if exit_reason == "EOD":
+            return "EOD_SELL" if is_long else "EOD_COVER"
+        if exit_reason == "SL":
+            return "SL_SELL" if is_long else "SL_COVER"
+        if exit_reason == "TP":
+            return "TP_SELL" if is_long else "TP_COVER"
+        return "SELL" if is_long else "COVER"
 
     def run_backtest(self, data=None):
         """
@@ -32,7 +63,8 @@ class Backtesting:
         If data is a pandas DataFrame, we update the data manager's data.
         """
         if data is not None:
-            self.strategy_manager.data_manager.data = data.copy()
+            from .data_manager import DataManager
+            self.strategy_manager.data_manager.data = DataManager._ensure_madrid_timezone(data.copy())
 
         full_data = self.strategy_manager.data_manager.data
         if full_data is None or full_data.empty:
@@ -46,7 +78,6 @@ class Backtesting:
         shares = 0.0
         position_active = False
         position_side = None  # "LONG" or "SHORT"
-        entry_capital = 0.0
         short_entry_price = None
         trades = []
         portfolio_value_history = []
@@ -55,16 +86,22 @@ class Backtesting:
             if not position_active:
                 return cash
             if position_side == "LONG":
-                return shares * market_price
-            return entry_capital + shares * (short_entry_price - market_price)
+                return cash + shares * market_price
+            return cash + shares * (short_entry_price - market_price)
 
-        LOGGER.info(f"Starting backtest on {len(full_data)} data rows with initial capital: {self.initial_capital}")
+        def _equity_mark(market_price):
+            return _portfolio_value(market_price)
+
+        LOGGER.info(
+            f"Starting backtest on {len(full_data)} data rows with initial "
+            f"capital: {self.initial_capital}, risk_pct: {self.risk_pct}"
+        )
 
         for i in range(len(full_data)):
             # Slice the data so the strategy only sees up to index i (inclusive)
             # This simulates real-time data arriving bar-by-bar and prevents look-ahead bias.
             slice_df = full_data.iloc[:i+1]
-            
+
             current_row = slice_df.iloc[-1]
             if pd.isna(current_row["Close"]):
                 continue
@@ -73,89 +110,118 @@ class Backtesting:
             self.strategy_manager.data_manager.data = slice_df
 
             # Evaluate strategy signals for this step
-            ticker, action, price = self.strategy_manager.check_strategy()
+            ticker, action, price, exit_reason = self.strategy_manager.check_strategy()
+            mark_price = float(current_row["Close"]) if not pd.isna(current_row["Close"]) else price
 
             # Execute trade simulation based on strategy action
             if action == "BUY" and not position_active:
-                entry_capital = cash
-                buy_cost = cash * (1.0 - self.commission)
-                shares = buy_cost / price
-                cash = 0.0
-                position_active = True
-                position_side = "LONG"
+                sl = self.strategy_manager.position.stop_loss_price
+                shares = self._size_shares(cash, price, sl)
+                if shares <= 0:
+                    LOGGER.warning(f"[{current_row.name}] BUY skipped — zero size")
+                    self.strategy_manager.position.close()
+                else:
+                    spend = shares * price / (1.0 - self.commission)
+                    cash -= spend
+                    position_active = True
+                    position_side = "LONG"
+                    equity = _equity_mark(price)
 
-                trades.append({
-                    "type": "BUY",
-                    "side": "LONG",
-                    "timestamp": current_row.name,
-                    "price": price,
-                    "shares": shares,
-                    "portfolio_value": entry_capital,
-                })
-                LOGGER.debug(f"[{current_row.name}] BUY {shares:.4f} shares of {ticker} at {price:.2f}")
+                    trades.append({
+                        "type": "BUY",
+                        "side": "LONG",
+                        "timestamp": current_row.name,
+                        "price": price,
+                        "shares": shares,
+                        "portfolio_value": equity,
+                    })
+                    LOGGER.debug(
+                        f"[{current_row.name}] BUY {shares:.4f} shares of {ticker} "
+                        f"at {price:.2f} (spend={spend:.2f}, cash_left={cash:.2f})"
+                    )
 
             elif action == "SELL" and not position_active:
-                entry_capital = cash
-                shares = cash * (1.0 - self.commission) / price
-                short_entry_price = price
-                position_active = True
-                position_side = "SHORT"
+                sl = self.strategy_manager.position.stop_loss_price
+                shares = self._size_shares(cash, price, sl)
+                if shares <= 0:
+                    LOGGER.warning(f"[{current_row.name}] SHORT skipped — zero size")
+                    self.strategy_manager.position.close()
+                else:
+                    # Notional capped at cash (1x); cash stays, PnL settles on cover.
+                    short_entry_price = price
+                    position_active = True
+                    position_side = "SHORT"
+                    equity = _equity_mark(price)
 
-                trades.append({
-                    "type": "SHORT",
-                    "side": "SHORT",
-                    "timestamp": current_row.name,
-                    "price": price,
-                    "shares": shares,
-                    "portfolio_value": entry_capital,
-                })
-                LOGGER.debug(f"[{current_row.name}] SHORT {shares:.4f} shares of {ticker} at {price:.2f}")
+                    trades.append({
+                        "type": "SHORT",
+                        "side": "SHORT",
+                        "timestamp": current_row.name,
+                        "price": price,
+                        "shares": shares,
+                        "portfolio_value": equity,
+                    })
+                    LOGGER.debug(
+                        f"[{current_row.name}] SHORT {shares:.4f} shares of {ticker} "
+                        f"at {price:.2f}"
+                    )
 
             elif action == "SELL" and position_active and position_side == "LONG":
-                cash = shares * price * (1.0 - self.commission)
+                proceeds = shares * price * (1.0 - self.commission)
+                cash += proceeds
                 old_shares = shares
                 shares = 0.0
                 position_active = False
                 position_side = None
+                exit_type = self._exit_trade_type("LONG", exit_reason)
 
                 self.strategy_manager.position.close()
+                equity = cash
 
                 trades.append({
-                    "type": "SELL",
+                    "type": exit_type,
                     "side": "LONG",
                     "timestamp": current_row.name,
                     "price": price,
                     "shares": old_shares,
-                    "portfolio_value": cash,
+                    "portfolio_value": equity,
                 })
-                LOGGER.debug(f"[{current_row.name}] SELL {old_shares:.4f} shares of {ticker} at {price:.2f}")
+                LOGGER.debug(
+                    f"[{current_row.name}] {exit_type} {old_shares:.4f} shares "
+                    f"of {ticker} at {price:.2f}"
+                )
 
             elif action == "BUY" and position_active and position_side == "SHORT":
                 gross_pnl = shares * (short_entry_price - price)
-                cash = entry_capital + gross_pnl * (1.0 - self.commission)
+                cash += gross_pnl * (1.0 - self.commission)
                 old_shares = shares
                 shares = 0.0
                 short_entry_price = None
                 position_active = False
                 position_side = None
+                exit_type = self._exit_trade_type("SHORT", exit_reason)
 
                 self.strategy_manager.position.close()
+                equity = cash
 
                 trades.append({
-                    "type": "COVER",
+                    "type": exit_type,
                     "side": "SHORT",
                     "timestamp": current_row.name,
                     "price": price,
                     "shares": old_shares,
-                    "portfolio_value": cash,
+                    "portfolio_value": equity,
                 })
-                LOGGER.debug(f"[{current_row.name}] COVER {old_shares:.4f} shares of {ticker} at {price:.2f}")
+                LOGGER.debug(
+                    f"[{current_row.name}] {exit_type} {old_shares:.4f} shares "
+                    f"of {ticker} at {price:.2f}"
+                )
 
-            current_val = _portfolio_value(price)
+            current_val = _portfolio_value(mark_price)
             portfolio_value_history.append({
                 "timestamp": current_row.name,
                 "portfolio_value": current_val,
-                "close_price": price
+                "close_price": mark_price,
             })
 
         # Restore the full data to the data manager
@@ -167,11 +233,11 @@ class Backtesting:
             last_price = last_row["Close"]
 
             if position_side == "LONG":
-                cash = shares * last_price * (1.0 - self.commission)
+                cash += shares * last_price * (1.0 - self.commission)
                 exit_type = "FORCE_SELL"
             else:
                 gross_pnl = shares * (short_entry_price - last_price)
-                cash = entry_capital + gross_pnl * (1.0 - self.commission)
+                cash += gross_pnl * (1.0 - self.commission)
                 exit_type = "FORCE_COVER"
 
             old_shares = shares
@@ -206,12 +272,16 @@ class Backtesting:
         total_return_pct = (total_pnl / self.initial_capital) * 100
 
         # Group trades into pairs of Buy and Sell
+        exit_types = (
+            "SELL", "COVER", "FORCE_SELL", "FORCE_COVER",
+            "EOD_SELL", "EOD_COVER", "SL_SELL", "SL_COVER", "TP_SELL", "TP_COVER",
+        )
         trade_pairs = []
         open_trade = None
         for t in trades:
             if t["type"] in ("BUY", "SHORT"):
                 open_trade = t
-            elif t["type"] in ("SELL", "COVER", "FORCE_SELL", "FORCE_COVER") and open_trade is not None:
+            elif t["type"] in exit_types and open_trade is not None:
                 pnl = t["portfolio_value"] - open_trade["portfolio_value"]
                 ret = (pnl / open_trade["portfolio_value"]) * 100
                 trade_pairs.append({
@@ -223,7 +293,7 @@ class Backtesting:
                     "shares": open_trade["shares"],
                     "pnl": pnl,
                     "return_pct": ret,
-                    "exit_type": t["type"]
+                    "exit_type": t["type"],
                 })
                 open_trade = None
 
@@ -249,7 +319,7 @@ class Backtesting:
             "win_rate": win_rate,
             "max_drawdown_pct": max_drawdown_pct,
             "trade_pairs": trade_pairs,
-            "portfolio_history": portfolio_value_history
+            "portfolio_history": portfolio_value_history,
         }
 
         self.print_summary(summary)

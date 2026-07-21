@@ -18,7 +18,7 @@ class TradingEngine:
         self.strategy_manager.update_market_data()
     
     def check_trading_strategy(self):
-        ticker, action, price = self.strategy_manager.check_strategy()
+        ticker, action, price = self.strategy_manager.check_strategy()[:3]
         self.broker_sync_manager.process_actions(ticker, action, price)
     
 

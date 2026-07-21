@@ -215,6 +215,7 @@ async function runBacktest(event) {
     const capital = parseFloat(document.getElementById('backtest-capital').value);
     // convert percentage back to decimal rate (e.g. 0.1% -> 0.001)
     const commission = parseFloat(document.getElementById('backtest-commission').value) / 100;
+    const riskPct = parseFloat(document.getElementById('backtest-risk').value);
     const period = document.getElementById('backtest-period').value;
     const interval = document.getElementById('backtest-interval').value;
     const ticker = document.getElementById('backtest-ticker').value.trim();
@@ -233,6 +234,7 @@ async function runBacktest(event) {
                 strategy_file: strategyFile,
                 capital: capital,
                 commission: commission,
+                risk_pct: riskPct,
                 period: period || null,
                 interval: interval || null,
                 ticker: ticker || null
@@ -407,7 +409,7 @@ function renderTradeLog(tradePairs) {
     if (tradePairs.length === 0) {
         tbody.innerHTML = `
             <tr class="empty-state-row">
-                <td colspan="7">No trades executed during the backtest period. Try adjusting entry/exit rules or selecting a different data period.</td>
+                <td colspan="8">No trades executed during the backtest period. Try adjusting entry/exit rules or selecting a different data period.</td>
             </tr>
         `;
         return;
@@ -417,10 +419,26 @@ function renderTradeLog(tradePairs) {
         const row = document.createElement('tr');
         const pnl = tp.pnl;
         const returnPct = tp.return_pct;
-        const exitBadge = tp.exit_type === 'FORCE_SELL' ? '<span class="badge-exit-force">FORCE CLOSE</span>' : '<span class="badge-exit-sell">SELL</span>';
-        
+        const isLong = (tp.side || 'LONG') === 'LONG';
+        const sideBadge = isLong
+            ? '<span class="badge-side-buy">BUY</span>'
+            : '<span class="badge-side-sell">SELL</span>';
+        const exitType = tp.exit_type || '';
+        let exitBadge;
+        if (exitType.startsWith('FORCE_') || exitType.startsWith('EOD_')) {
+            exitBadge = '<span class="badge-exit-force">EOD / FORCE</span>';
+        } else if (exitType.startsWith('SL_')) {
+            exitBadge = '<span class="badge-exit-force">SL</span>';
+        } else if (exitType.startsWith('TP_')) {
+            exitBadge = '<span class="badge-exit-cover">TP</span>';
+        } else if (isLong) {
+            exitBadge = '<span class="badge-exit-sell">SELL</span>';
+        } else {
+            exitBadge = '<span class="badge-exit-cover">COVER</span>';
+        }        
         row.innerHTML = `
             <td class="trade-pair-cell">#${idx + 1}</td>
+            <td>${sideBadge}</td>
             <td>${formatTime(tp.buy_time)}</td>
             <td>$${tp.buy_price.toFixed(2)}</td>
             <td>${formatTime(tp.sell_time)} ${exitBadge}</td>
