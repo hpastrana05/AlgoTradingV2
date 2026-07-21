@@ -306,3 +306,331 @@ def tp_by_ratio(data, loss_units=1, win_units=3, position=None, *_, **__):
         return data["Low"].iloc[-1] <= tp_price
 
     return False
+
+
+# ---------------------------------------------------------------------------
+# Anchor-candle breakout + retest (any instrument / session time)
+# ---------------------------------------------------------------------------
+
+# session_hour / session_minute in strategy JSON are interpreted in this zone.
+SESSION_INPUT_TZ = "Europe/Madrid"
+
+
+def _anchor_bar_mask(index, session_hour, session_minute):
+    if not isinstance(index, pd.DatetimeIndex):
+        return None
+
+    if index.tz is None:
+        local_index = index.tz_localize("UTC").tz_convert(SESSION_INPUT_TZ)
+    else:
+        local_index = index.tz_convert(SESSION_INPUT_TZ)
+    return (local_index.hour == session_hour) & (local_index.minute == session_minute)
+
+
+def _session_date_for_bar(index):
+    current_ts = index[-1]
+    if isinstance(index, pd.DatetimeIndex) and index.tz is not None:
+        return current_ts.tz_convert(SESSION_INPUT_TZ).date()
+    return current_ts.date()
+
+
+def _sync_session_day(position, data):
+    """Reset anchor state when the session calendar day changes."""
+    current_date = _session_date_for_bar(data.index)
+    if position.session_date != current_date:
+        position.reset_session_state()
+        position.session_date = current_date
+        position.session_traded = False
+    return current_date
+
+
+def _local_bar_minutes(index):
+    ts = index[-1]
+    if isinstance(index, pd.DatetimeIndex) and index.tz is not None:
+        ts = ts.tz_convert(SESSION_INPUT_TZ)
+    return ts.hour * 60 + ts.minute
+
+
+def _check_entry_deadline(
+    data,
+    position,
+    entry_deadline_hour=16,
+    entry_deadline_minute=15,
+):
+    """
+    Abandon the setup for the day once the deadline bar has passed without entry.
+
+    With 15m bars and deadline 16:15, entries are still allowed on the 16:00 and
+    16:15 candles; from the 16:30 bar onward no new entries are taken.
+    """
+    if position.session_traded or position.session_abandoned:
+        return position.session_abandoned
+
+    if position.session_high is None:
+        return False
+
+    deadline = entry_deadline_hour * 60 + entry_deadline_minute
+    if _local_bar_minutes(data.index) > deadline:
+        position.session_abandoned = True
+
+    return position.session_abandoned
+
+
+def _update_anchor_levels(
+    data, position, session_hour=15, session_minute=30
+):
+    """
+    After the anchor candle (session_hour:session_minute) closes, store its
+    high / low / mid on the position. Times are Europe/Madrid (SESSION_INPUT_TZ).
+    """
+    if len(data) < 2:
+        return False
+
+    index = data.index
+    current_date = _sync_session_day(position, data)
+
+    mask = _anchor_bar_mask(index, session_hour, session_minute)
+    if mask is None:
+        return False
+
+    if index.tz is not None:
+        day_index = index.tz_convert(SESSION_INPUT_TZ)
+        day_mask = day_index.date == current_date
+    else:
+        day_mask = index.date == current_date
+
+    anchor_bars = data.loc[mask & day_mask]
+    if anchor_bars.empty:
+        return position.session_high is not None
+
+    anchor_bar = anchor_bars.iloc[-1]
+    current_ts = index[-1]
+    if current_ts <= anchor_bar.name:
+        return position.session_high is not None
+
+    if position.session_high is None:
+        position.session_high = float(anchor_bar["High"])
+        position.session_low = float(anchor_bar["Low"])
+        position.session_mid = (position.session_high + position.session_low) / 2.0
+
+    return position.session_high is not None
+
+
+def _anchor_range(position):
+    if position.session_high is None or position.session_low is None:
+        return None
+    return position.session_high - position.session_low
+
+
+def _update_anchor_breakout(data, position, breakout_buffer_pct=0, side=None):
+    """Mark breakout direction after a clear close beyond the anchor range."""
+    if position.is_open or position.session_high is None:
+        return
+
+    if position.breakout_side is not None:
+        return
+
+    close = float(data["Close"].iloc[-1])
+    rng = _anchor_range(position)
+    if rng is None or rng <= 0:
+        return
+
+    buffer = rng * (breakout_buffer_pct / 100.0)
+    current_ts = data.index[-1]
+
+    if close > position.session_high + buffer and side in (None, "BUY"):
+        position.breakout_side = "BUY"
+        position.breakout_level = position.session_high
+        position.breakout_bar_ts = current_ts
+    elif close < position.session_low - buffer and side in (None, "SELL"):
+        position.breakout_side = "SELL"
+        position.breakout_level = position.session_low
+        position.breakout_bar_ts = current_ts
+
+
+def _prepare_anchor_trade(position, side, entry, win_units, loss_units):
+    """SL at anchor mid, TP by risk-reward ratio."""
+    sl = position.session_mid
+    if sl is None:
+        return False
+
+    if side == "BUY":
+        risk = entry - sl
+        if risk <= 0:
+            return False
+        tp = entry + (win_units / loss_units) * risk
+    elif side == "SELL":
+        risk = sl - entry
+        if risk <= 0:
+            return False
+        tp = entry - (win_units / loss_units) * risk
+    else:
+        return False
+
+    position.intended_action = side
+    position.stop_loss_price = sl
+    position.take_profit_price = tp
+    position.breakout_side = None
+    position.breakout_level = None
+    position.breakout_bar_ts = None
+    position.session_traded = True
+    return True
+
+
+def session_retest_long(
+    data,
+    position,
+    session_hour=15,
+    session_minute=30,
+    entry_deadline_hour=16,
+    entry_deadline_minute=15,
+    breakout_buffer_pct=0,
+    retest_tolerance_pct=15,
+    win_units=2,
+    loss_units=1,
+    *_,
+    **__,
+):
+    """
+    Long after breakout above the anchor candle high:
+    1) A candle must close clearly above the anchor high (breakout).
+    2) Later, price retests that high and closes back above it.
+
+    SL: midpoint of the anchor range. TP: win_units:loss_units (default 1:2).
+    All clock times are Europe/Madrid. Abandons after entry_deadline.
+    """
+    if position.is_open:
+        return False
+
+    _sync_session_day(position, data)
+
+    if position.session_traded or position.session_abandoned:
+        return False
+
+    if not _update_anchor_levels(data, position, session_hour, session_minute):
+        return False
+
+    if _check_entry_deadline(data, position, entry_deadline_hour, entry_deadline_minute):
+        return False
+
+    _update_anchor_breakout(data, position, breakout_buffer_pct, side="BUY")
+
+    if position.breakout_side != "BUY":
+        return False
+
+    current_ts = data.index[-1]
+    if position.breakout_bar_ts is not None and current_ts <= position.breakout_bar_ts:
+        return False
+
+    bar = data.iloc[-1]
+    close = float(bar["Close"])
+    low = float(bar["Low"])
+    level = position.session_high
+    rng = _anchor_range(position)
+    if rng is None:
+        return False
+
+    tolerance = rng * (retest_tolerance_pct / 100.0)
+    retest_touch = low <= level + tolerance
+    retest_confirm = close > level
+
+    if not (retest_touch and retest_confirm):
+        return False
+
+    return _prepare_anchor_trade(position, "BUY", close, win_units, loss_units)
+
+
+def session_retest_short(
+    data,
+    position,
+    session_hour=15,
+    session_minute=30,
+    entry_deadline_hour=16,
+    entry_deadline_minute=15,
+    breakout_buffer_pct=0,
+    retest_tolerance_pct=15,
+    win_units=2,
+    loss_units=1,
+    *_,
+    **__,
+):
+    """
+    Short after breakout below the anchor candle low:
+    1) A candle must close clearly below the anchor low (breakout).
+    2) Later, price retests that low and closes back below it.
+
+    SL: midpoint of the anchor range. TP: win_units:loss_units (default 1:2).
+    All clock times are Europe/Madrid. Abandons after entry_deadline.
+    """
+    if position.is_open:
+        return False
+
+    _sync_session_day(position, data)
+
+    if position.session_traded or position.session_abandoned:
+        return False
+
+    if not _update_anchor_levels(data, position, session_hour, session_minute):
+        return False
+
+    if _check_entry_deadline(data, position, entry_deadline_hour, entry_deadline_minute):
+        return False
+
+    _update_anchor_breakout(data, position, breakout_buffer_pct, side="SELL")
+
+    if position.breakout_side != "SELL":
+        return False
+
+    current_ts = data.index[-1]
+    if position.breakout_bar_ts is not None and current_ts <= position.breakout_bar_ts:
+        return False
+
+    bar = data.iloc[-1]
+    close = float(bar["Close"])
+    high = float(bar["High"])
+    level = position.session_low
+    rng = _anchor_range(position)
+    if rng is None:
+        return False
+
+    tolerance = rng * (retest_tolerance_pct / 100.0)
+    retest_touch = high >= level - tolerance
+    retest_confirm = close < level
+
+    if not (retest_touch and retest_confirm):
+        return False
+
+    return _prepare_anchor_trade(position, "SELL", close, win_units, loss_units)
+
+
+def sl_session_mid(data, position, *_, **__):
+    """Stop loss at the anchor range midpoint (set on entry)."""
+    if position is None or not position.is_open or position.stop_loss_price is None:
+        return False
+
+    sl = position.stop_loss_price
+
+    if position.action == "BUY":
+        return float(data["Low"].iloc[-1]) <= sl
+
+    if position.action == "SELL":
+        return float(data["High"].iloc[-1]) >= sl
+
+    return False
+
+
+def tp_session_ratio(data, position, *_, **__):
+    """Take profit at the price computed on entry (1:1.5, 1:2, etc.)."""
+    if position is None or not position.is_open or position.take_profit_price is None:
+        return False
+
+    tp = position.take_profit_price
+
+    if position.action == "BUY":
+        return float(data["High"].iloc[-1]) >= tp
+
+    if position.action == "SELL":
+        return float(data["Low"].iloc[-1]) <= tp
+
+    return False
+

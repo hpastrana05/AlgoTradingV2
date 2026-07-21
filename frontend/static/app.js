@@ -3,8 +3,16 @@ const state = {
     signals: [],      // Dynamic signal definitions from API
     strategies: [],   // List of existing strategies
     chart: null,      // Chart.js instance
-    editingFile: null // Filename being edited, or null when creating
+    editingFile: null, // Filename being edited, or null when creating
+    lastResult: null,  // Latest backtest result
+    comparisonRuns: [], // Pinned runs for ticker comparison
+    livePollTimer: null
 };
+
+const COMPARISON_COLORS = [
+    '#6366f1', '#14b8a6', '#f59e0b', '#ef4444', '#8b5cf6', '#22c55e', '#06b6d4', '#f97316'
+];
+
 
 // ==========================================================================
 // TOAST NOTIFICATIONS HELPER
@@ -66,6 +74,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     
     // Set up Backtest form execution
     document.getElementById('backtest-form').addEventListener('submit', runBacktest);
+    document.getElementById('strategy-select').addEventListener('change', onStrategySelectChange);
+    document.getElementById('btn-clear-comparison').addEventListener('click', clearComparison);
+    document.getElementById('chart-compare-mode').addEventListener('change', () => {
+        if (state.lastResult) {
+            renderChart(state.lastResult);
+        }
+    });
+
+    // Live trading panel
+    initLivePanel();
 });
 
 // Tab navigation handler
@@ -77,6 +95,10 @@ function initTabs() {
         'backtest': {
             title: 'Backtest Panel',
             desc: 'Run historical simulations and analyze strategy performance.'
+        },
+        'live': {
+            title: 'Live Trading',
+            desc: 'Run a strategy 24/7 against Trading212 in Demo or Live mode.'
         },
         'creator': {
             title: 'Strategy Creator',
@@ -114,6 +136,13 @@ function initTabs() {
             if (targetTab === 'strategies') {
                 renderStrategiesList();
             }
+            if (targetTab === 'live') {
+                refreshLiveStatus();
+                refreshLiveLogs();
+                startLivePolling();
+            } else {
+                stopLivePolling();
+            }
         });
     });
 }
@@ -145,13 +174,34 @@ async function loadStrategies() {
 function populateStrategiesDropdown() {
     const select = document.getElementById('strategy-select');
     select.innerHTML = '<option value="" disabled selected>Choose a strategy...</option>';
+
+    const liveSelect = document.getElementById('live-strategy-select');
+    if (liveSelect) {
+        liveSelect.innerHTML = '<option value="" disabled selected>Choose a strategy...</option>';
+    }
     
     state.strategies.forEach(strat => {
         const option = document.createElement('option');
         option.value = strat.file_name;
         option.textContent = `${strat.config.name} (${strat.config.ticker_data})`;
+        option.dataset.ticker = strat.config.ticker_data || '';
         select.appendChild(option);
+
+        if (liveSelect) {
+            const liveOpt = option.cloneNode(true);
+            liveSelect.appendChild(liveOpt);
+        }
     });
+}
+
+function onStrategySelectChange() {
+    const select = document.getElementById('strategy-select');
+    const option = select.options[select.selectedIndex];
+    const tickerInput = document.getElementById('backtest-ticker');
+    // Prefill override with strategy ticker only if user left it empty
+    if (option && option.dataset.ticker && !tickerInput.value.trim()) {
+        tickerInput.placeholder = `Default: ${option.dataset.ticker}`;
+    }
 }
 
 // ==========================================================================
@@ -166,6 +216,8 @@ async function runBacktest(event) {
     // convert percentage back to decimal rate (e.g. 0.1% -> 0.001)
     const commission = parseFloat(document.getElementById('backtest-commission').value) / 100;
     const period = document.getElementById('backtest-period').value;
+    const interval = document.getElementById('backtest-interval').value;
+    const ticker = document.getElementById('backtest-ticker').value.trim();
     
     if (!strategyFile) {
         showToast("Configuration Error", "Please select a strategy to backtest.", "error");
@@ -181,25 +233,39 @@ async function runBacktest(event) {
                 strategy_file: strategyFile,
                 capital: capital,
                 commission: commission,
-                period: period || null
+                period: period || null,
+                interval: interval || null,
+                ticker: ticker || null
             })
         });
         
         if (!response.ok) {
-            const errorData = await response.json();
-            throw new Error(errorData.detail || "Backtest execution failed");
+            const errorData = await response.json().catch(() => ({}));
+            const detail = errorData.detail;
+            const message = Array.isArray(detail)
+                ? detail.map(d => d.msg || JSON.stringify(d)).join('; ')
+                : (detail || "Backtest execution failed");
+            throw new Error(message);
         }
         
         const results = await response.json();
-        showToast("Backtest Completed", `Simulation completed successfully for ${results.strategy_name}!`, "success");
+        if (!results.ticker) {
+            throw new Error(
+                "Server response missing ticker — restart the frontend API " +
+                "(uvicorn frontend.main:app --reload) and hard-refresh the browser."
+            );
+        }
+        state.lastResult = results;
+        pinComparisonRun(results);
+
+        showToast(
+            "Backtest Completed",
+            `${results.strategy_name} on ${results.ticker} [${results.interval}] (${results.period || 'default'}) finished.`,
+            "success"
+        );
         
-        // Update metric UI cards
         updateMetricCards(results);
-        
-        // Render portfolio performance graph
-        renderChart(results.portfolio_history);
-        
-        // Populate execution log table
+        renderChart(results);
         renderTradeLog(results.trade_pairs);
         
     } catch (e) {
@@ -207,6 +273,92 @@ async function runBacktest(event) {
     } finally {
         toggleLoading(false);
     }
+}
+
+function comparisonKey(run) {
+    return `${run.ticker}|${run.interval}|${run.period}|${run.strategy_name || ''}`;
+}
+
+function pinComparisonRun(results) {
+    const run = {
+        id: Date.now(),
+        strategy_name: results.strategy_name || '—',
+        ticker: results.ticker || 'unknown',
+        interval: results.interval || 'default',
+        period: results.period || 'default',
+        total_return_pct: results.total_return_pct,
+        win_rate: results.win_rate,
+        total_trades: results.total_trades,
+        winning_trades: results.winning_trades,
+        losing_trades: results.losing_trades,
+        max_drawdown_pct: results.max_drawdown_pct,
+        final_value: results.final_value,
+        portfolio_history: results.portfolio_history || []
+    };
+
+    // Replace existing run for same ticker+interval+period+strategy, keep max 8
+    const key = comparisonKey(run);
+    state.comparisonRuns = state.comparisonRuns.filter(r => comparisonKey(r) !== key);
+    state.comparisonRuns.push(run);
+    if (state.comparisonRuns.length > 8) {
+        state.comparisonRuns = state.comparisonRuns.slice(-8);
+    }
+
+    // Auto-enable overlay once we have multiple pinned runs
+    const overlay = document.getElementById('chart-compare-mode');
+    if (overlay && state.comparisonRuns.length > 1) {
+        overlay.checked = true;
+    }
+
+    renderComparisonTable();
+}
+
+function clearComparison() {
+    state.comparisonRuns = [];
+    renderComparisonTable();
+    if (state.lastResult) {
+        renderChart(state.lastResult);
+    }
+    showToast("Comparison Cleared", "Pinned runs removed.", "info");
+}
+
+function renderComparisonTable() {
+    const tbody = document.querySelector('#comparison-table tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    if (state.comparisonRuns.length === 0) {
+        tbody.innerHTML = `
+            <tr class="empty-state-row">
+                <td colspan="10">
+                    Run a backtest, change ticker/interval override, run again — rows pin here automatically.
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    state.comparisonRuns.forEach((run, idx) => {
+        const row = document.createElement('tr');
+        const ret = run.total_return_pct;
+        const color = COMPARISON_COLORS[idx % COMPARISON_COLORS.length];
+        row.innerHTML = `
+            <td>
+                <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};margin-right:6px;"></span>
+                #${idx + 1}
+            </td>
+            <td><strong>${run.ticker}</strong></td>
+            <td>${run.interval}</td>
+            <td>${run.period}</td>
+            <td>${run.strategy_name}</td>
+            <td class="pnl-cell ${ret >= 0 ? 'positive' : 'negative'}">${ret >= 0 ? '+' : ''}${ret.toFixed(2)}%</td>
+            <td>${run.win_rate.toFixed(1)}%</td>
+            <td>${run.total_trades} (${run.winning_trades}W/${run.losing_trades}L)</td>
+            <td>${run.max_drawdown_pct.toFixed(2)}%</td>
+            <td>$${run.final_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+        `;
+        tbody.appendChild(row);
+    });
 }
 
 // Updates UI metrics text content and colors
@@ -234,6 +386,17 @@ function updateMetricCards(results) {
     
     document.getElementById('metric-drawdown').textContent = `${results.max_drawdown_pct.toFixed(2)}%`;
     document.getElementById('metric-final-val').textContent = `$${results.final_value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+    const tickerHint = document.getElementById('metric-ticker-used');
+    if (tickerHint) {
+        if (results.ticker) {
+            const parts = [`Ticker: ${results.ticker}`];
+            if (results.interval) parts.push(results.interval);
+            if (results.period) parts.push(results.period);
+            tickerHint.textContent = parts.join(' · ');
+        } else {
+            tickerHint.textContent = 'Cash + holdings value';
+        }
+    }
 }
 
 // Populates execution log table
@@ -275,54 +438,110 @@ function formatTime(timeStr) {
     return timeStr.replace(/[-+]\d{2}:\d{2}$/, '').split('.')[0];
 }
 
-// Render chart using Chart.js
-function renderChart(history) {
-    const ctx = document.getElementById('portfolioChart').getContext('2d');
-    
-    // Destroy previous chart if it exists
+// Render chart using Chart.js — linear lines, no point markers
+function renderChart(resultsOrHistory) {
+    const canvas = document.getElementById('portfolioChart');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const overlayToggle = document.getElementById('chart-compare-mode');
+    const compareMode = !!(overlayToggle && overlayToggle.checked && state.comparisonRuns.length > 1);
+
     if (state.chart) {
         state.chart.destroy();
     }
-    
-    const labels = history.map(h => formatTime(h.timestamp));
-    
-    // Normalize to base 100 (percentage change from the start of simulation)
-    const initialPortfolio = history[0].portfolio_value;
-    const initialAsset = history[0].close_price;
-    
-    const normalizedPortfolio = history.map(h => ((h.portfolio_value / initialPortfolio) * 100) - 100);
-    const normalizedAsset = history.map(h => ((h.close_price / initialAsset) * 100) - 100);
-    
-    // Create new unified-axis line chart comparing returns
+
+    const titleEl = document.getElementById('chart-title');
+    let datasets = [];
+    let labels = [];
+    let tooltipHistory = null;
+
+    if (compareMode) {
+        titleEl.textContent = 'Comparison — Portfolio Returns';
+        // Align all runs to normalized index (0..100%) of their own length
+        const maxLen = Math.max(...state.comparisonRuns.map(r => r.portfolio_history.length));
+        labels = Array.from({ length: maxLen }, (_, i) => {
+            const pct = maxLen <= 1 ? 0 : (i / (maxLen - 1)) * 100;
+            return `${pct.toFixed(0)}%`;
+        });
+
+        state.comparisonRuns.forEach((run, idx) => {
+            const history = run.portfolio_history;
+            if (!history.length) return;
+            const initial = history[0].portfolio_value;
+            const series = history.map(h => ((h.portfolio_value / initial) * 100) - 100);
+            // Stretch shorter series to maxLen by last-value pad for chart alignment
+            while (series.length < maxLen) {
+                series.push(series[series.length - 1]);
+            }
+            datasets.push({
+                label: `${run.ticker} · ${run.interval} · ${run.period} (${run.total_return_pct >= 0 ? '+' : ''}${run.total_return_pct.toFixed(1)}%)`,
+                data: series,
+                borderColor: COMPARISON_COLORS[idx % COMPARISON_COLORS.length],
+                borderWidth: 2,
+                backgroundColor: 'transparent',
+                fill: false,
+                tension: 0,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                pointHitRadius: 8
+            });
+        });
+    } else {
+        const history = resultsOrHistory.portfolio_history || resultsOrHistory;
+        tooltipHistory = history;
+        if (resultsOrHistory.ticker) {
+            const bits = [resultsOrHistory.ticker];
+            if (resultsOrHistory.interval) bits.push(resultsOrHistory.interval);
+            titleEl.textContent = `Portfolio Growth — ${bits.join(' · ')}`;
+        } else {
+            titleEl.textContent = 'Portfolio Growth Chart';
+        }
+
+        labels = history.map(h => formatTime(h.timestamp));
+        const initialPortfolio = history[0].portfolio_value;
+        const initialAsset = history[0].close_price;
+        const normalizedPortfolio = history.map(h => ((h.portfolio_value / initialPortfolio) * 100) - 100);
+        const normalizedAsset = history.map(h => ((h.close_price / initialAsset) * 100) - 100);
+
+        datasets = [
+            {
+                label: 'Portfolio Return (%)',
+                data: normalizedPortfolio,
+                borderColor: '#6366f1',
+                borderWidth: 2,
+                backgroundColor: 'rgba(99, 102, 241, 0.06)',
+                fill: true,
+                tension: 0,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                pointHitRadius: 8
+            },
+            {
+                label: 'Buy & Hold (%)',
+                data: normalizedAsset,
+                borderColor: '#14b8a6',
+                borderWidth: 1.5,
+                borderDash: [5, 4],
+                backgroundColor: 'transparent',
+                fill: false,
+                tension: 0,
+                pointRadius: 0,
+                pointHoverRadius: 4,
+                pointHitRadius: 8
+            }
+        ];
+    }
+
     state.chart = new Chart(ctx, {
         type: 'line',
-        data: {
-            labels: labels,
-            datasets: [
-                {
-                    label: 'Portfolio Return (%)',
-                    data: normalizedPortfolio,
-                    borderColor: '#6366f1',
-                    borderWidth: 2.5,
-                    backgroundColor: 'rgba(99, 102, 241, 0.05)',
-                    fill: true,
-                    tension: 0.15
-                },
-                {
-                    label: 'Asset Return (%)',
-                    data: normalizedAsset,
-                    borderColor: '#14b8a6',
-                    borderWidth: 1.5,
-                    borderDash: [4, 4],
-                    backgroundColor: 'transparent',
-                    fill: false,
-                    tension: 0.1
-                }
-            ]
-        },
+        data: { labels, datasets },
         options: {
             responsive: true,
             maintainAspectRatio: false,
+            elements: {
+                point: { radius: 0 },
+                line: { tension: 0 }
+            },
             interaction: {
                 mode: 'index',
                 intersect: false,
@@ -345,14 +564,15 @@ function renderChart(history) {
                     bodyFont: { family: 'Plus Jakarta Sans' },
                     callbacks: {
                         label: function(context) {
-                            const index = context.dataIndex;
-                            const item = history[index];
+                            if (compareMode || !tooltipHistory) {
+                                return `${context.dataset.label}: ${context.parsed.y >= 0 ? '+' : ''}${context.parsed.y.toFixed(2)}%`;
+                            }
+                            const item = tooltipHistory[context.dataIndex];
                             const label = context.dataset.label;
                             if (label.includes('Portfolio')) {
-                                return `Portfolio Value: $${item.portfolio_value.toFixed(2)} (${context.parsed.y >= 0 ? '+' : ''}${context.parsed.y.toFixed(2)}%)`;
-                            } else {
-                                return `Asset Close Price: $${item.close_price.toFixed(2)} (${context.parsed.y >= 0 ? '+' : ''}${context.parsed.y.toFixed(2)}%)`;
+                                return `Portfolio: $${item.portfolio_value.toFixed(2)} (${context.parsed.y >= 0 ? '+' : ''}${context.parsed.y.toFixed(2)}%)`;
                             }
+                            return `Asset: $${item.close_price.toFixed(2)} (${context.parsed.y >= 0 ? '+' : ''}${context.parsed.y.toFixed(2)}%)`;
                         }
                     }
                 }
@@ -360,7 +580,12 @@ function renderChart(history) {
             scales: {
                 x: {
                     grid: { color: 'rgba(31, 41, 55, 0.4)' },
-                    ticks: { color: '#9ca3af', font: { size: 10 }, maxTicksLimit: 12 }
+                    ticks: { color: '#9ca3af', font: { size: 10 }, maxTicksLimit: 12 },
+                    title: compareMode ? {
+                        display: true,
+                        text: 'Progress through backtest',
+                        color: '#9ca3af'
+                    } : undefined
                 },
                 y: {
                     type: 'linear',
@@ -372,7 +597,7 @@ function renderChart(history) {
                         font: { family: 'Plus Jakarta Sans', size: 12, weight: '600' }
                     },
                     grid: { color: 'rgba(31, 41, 55, 0.6)' },
-                    ticks: { 
+                    ticks: {
                         color: '#f3f4f6',
                         callback: function(value) { return value.toFixed(1) + '%'; }
                     }
@@ -590,8 +815,12 @@ function createGroupNode(preset = null, removable = true) {
 function fillSignalParams(paramsGrid, signalMeta, preset = null) {
     paramsGrid.innerHTML = '';
 
-    if (signalMeta && signalMeta.parameters.length > 0) {
-        signalMeta.parameters.forEach(p => {
+    const visibleParams = (signalMeta?.parameters || []).filter(
+        (p) => p.name !== 'session_tz'
+    );
+
+    if (visibleParams.length > 0) {
+        visibleParams.forEach(p => {
             const field = document.createElement('div');
             field.className = 'signal-param-field';
 
@@ -602,6 +831,8 @@ function fillSignalParams(paramsGrid, signalMeta, preset = null) {
                     : preset[p.name];
             }
 
+            const requiredAttr = p.required === false ? '' : 'required';
+
             field.innerHTML = `
                 <label>${p.name}</label>
                 <input type="text"
@@ -609,7 +840,7 @@ function fillSignalParams(paramsGrid, signalMeta, preset = null) {
                        data-param-type="${p.type}"
                        placeholder="${p.description}"
                        value="${value}"
-                       required>
+                       ${requiredAttr}>
             `;
             paramsGrid.appendChild(field);
         });
@@ -804,8 +1035,10 @@ function compileSignalNode(signalNode) {
 
     signalNode.querySelectorAll('.signal-params-grid input').forEach(input => {
         const name = input.getAttribute('data-param-name');
+        if (name === 'session_tz') return;
         const type = input.getAttribute('data-param-type');
         const rawVal = input.value.trim();
+        if (!rawVal) return;
 
         if (type === 'array') {
             signalObj[name] = rawVal.split(',').map(v => Number(v.trim()));
@@ -896,6 +1129,7 @@ function renderStrategiesList() {
         card.querySelector('.btn-load-strat').addEventListener('click', () => {
             const dropdown = document.getElementById('strategy-select');
             dropdown.value = strat.file_name;
+            onStrategySelectChange();
             document.querySelector('.nav-btn[data-tab="backtest"]').click();
             showToast("Strategy Loaded", `Loaded ${strat.config.name} into configuration panel.`, "success");
         });
@@ -911,4 +1145,208 @@ function formatRulePreview(rule) {
         return `${rule.type}(${subList})`;
     }
     return rule.type;
+}
+
+// ==========================================================================
+// LIVE TRADING PANEL
+// ==========================================================================
+function initLivePanel() {
+    const form = document.getElementById('live-form');
+    if (!form) return;
+
+    form.addEventListener('submit', startLiveEngine);
+    document.getElementById('btn-live-stop').addEventListener('click', stopLiveEngine);
+    document.getElementById('btn-live-refresh').addEventListener('click', async () => {
+        await refreshLiveStatus();
+        await refreshLiveLogs();
+    });
+    document.getElementById('live-mode-select').addEventListener('change', onLiveModeChange);
+    onLiveModeChange();
+    refreshLiveStatus();
+}
+
+function onLiveModeChange() {
+    const mode = document.getElementById('live-mode-select').value;
+    const badge = document.getElementById('live-mode-badge');
+    const warning = document.getElementById('live-warning');
+    const isLive = mode === 'live';
+
+    badge.textContent = isLive ? 'LIVE' : 'DEMO';
+    badge.className = `mode-badge ${isLive ? 'mode-live' : 'mode-demo'}`;
+    warning.classList.toggle('is-live', isLive);
+    warning.textContent = isLive
+        ? 'LIVE mode uses real money. Orders will be sent to Trading212 live.'
+        : 'Demo uses paper trading credentials. Live places real orders on Trading212.';
+}
+
+function startLivePolling() {
+    stopLivePolling();
+    state.livePollTimer = setInterval(async () => {
+        await refreshLiveStatus();
+        await refreshLiveLogs();
+    }, 4000);
+}
+
+function stopLivePolling() {
+    if (state.livePollTimer) {
+        clearInterval(state.livePollTimer);
+        state.livePollTimer = null;
+    }
+}
+
+function renderLiveStatus(status) {
+    const running = !!status.running;
+    const engineEl = document.getElementById('live-engine-state');
+    const sinceEl = document.getElementById('live-engine-since');
+    const nameEl = document.getElementById('live-strategy-name');
+    const metaEl = document.getElementById('live-strategy-meta');
+    const modeEl = document.getElementById('live-mode-label');
+    const credsEl = document.getElementById('live-creds-label');
+    const tickEl = document.getElementById('live-last-tick');
+    const errEl = document.getElementById('live-last-error');
+    const startBtn = document.getElementById('btn-live-start');
+    const stopBtn = document.getElementById('btn-live-stop');
+    const modeSelect = document.getElementById('live-mode-select');
+    const stratSelect = document.getElementById('live-strategy-select');
+
+    engineEl.textContent = running ? 'Running' : 'Stopped';
+    engineEl.className = `metric-value ${running ? 'engine-running' : 'engine-stopped'}`;
+    sinceEl.textContent = running
+        ? `Since ${status.started_at || '—'}`
+        : (status.stopped_at ? `Stopped ${status.stopped_at}` : 'Not running');
+
+    nameEl.textContent = status.strategy_name || '—';
+    if (status.ticker) {
+        const apiPart = status.ticker_api
+            ? `API ${status.ticker_api}`
+            : 'API unset (no orders)';
+        metaEl.textContent = `${status.ticker} · ${apiPart} · ${status.interval || '—'}`;
+    } else {
+        metaEl.textContent = 'Select a strategy to run';
+    }
+
+    modeEl.textContent = (status.mode || 'demo').toUpperCase();
+    credsEl.textContent = status.has_credentials
+        ? 'Credentials loaded'
+        : 'Missing .env credentials';
+
+    tickEl.textContent = status.last_tick_at || '—';
+    if (status.last_error) {
+        errEl.textContent = status.last_error;
+        errEl.className = 'metric-subtext engine-error';
+    } else {
+        errEl.textContent = 'No errors';
+        errEl.className = 'metric-subtext';
+    }
+
+    startBtn.disabled = running;
+    stopBtn.disabled = !running;
+    modeSelect.disabled = running;
+    stratSelect.disabled = running;
+
+    // Only sync the mode dropdown from the server while a run is active.
+    // When idle, leave the user's Demo/Live choice alone.
+    if (running && status.mode) {
+        modeSelect.value = status.mode;
+        onLiveModeChange();
+    }
+}
+
+async function refreshLiveStatus() {
+    try {
+        const response = await fetch('/api/live/status');
+        if (!response.ok) throw new Error('Failed to fetch live status');
+        const status = await response.json();
+        renderLiveStatus(status);
+        return status;
+    } catch (e) {
+        console.error(e);
+        return null;
+    }
+}
+
+async function refreshLiveLogs() {
+    const view = document.getElementById('live-log-view');
+    if (!view) return;
+    try {
+        const response = await fetch('/api/live/logs?limit=150');
+        if (!response.ok) throw new Error('Failed to fetch logs');
+        const data = await response.json();
+        const logs = data.logs || [];
+        if (!logs.length) {
+            view.textContent = 'Waiting for engine activity…';
+            return;
+        }
+        view.textContent = logs.map(l => l.line || `${l.time} ${l.message}`).join('\n');
+        view.scrollTop = view.scrollHeight;
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+async function startLiveEngine(event) {
+    event.preventDefault();
+    const strategyFile = document.getElementById('live-strategy-select').value;
+    const mode = document.getElementById('live-mode-select').value;
+    const isDemo = mode !== 'live';
+
+    if (!strategyFile) {
+        showToast('Configuration Error', 'Please select a strategy to run.', 'error');
+        return;
+    }
+
+    if (!isDemo) {
+        const ok = window.confirm(
+            'Start in LIVE mode?\n\nThis can place real orders with real money on Trading212.'
+        );
+        if (!ok) return;
+    }
+
+    toggleLoading(true);
+    try {
+        const response = await fetch('/api/live/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                strategy_file: strategyFile,
+                is_demo: isDemo
+            })
+        });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.detail || 'Failed to start engine');
+        }
+        renderLiveStatus(data);
+        showToast(
+            'Engine Started',
+            `${data.strategy_name} running in ${data.mode.toUpperCase()} mode.`,
+            'success'
+        );
+        startLivePolling();
+        await refreshLiveLogs();
+    } catch (e) {
+        showToast('Start Failed', e.message, 'error');
+    } finally {
+        toggleLoading(false);
+        lucide.createIcons();
+    }
+}
+
+async function stopLiveEngine() {
+    toggleLoading(true);
+    try {
+        const response = await fetch('/api/live/stop', { method: 'POST' });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+            throw new Error(data.detail || 'Failed to stop engine');
+        }
+        renderLiveStatus(data);
+        showToast('Engine Stopped', 'Live trading loop has been stopped.', 'info');
+        await refreshLiveLogs();
+    } catch (e) {
+        showToast('Stop Failed', e.message, 'error');
+    } finally {
+        toggleLoading(false);
+        lucide.createIcons();
+    }
 }

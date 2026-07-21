@@ -37,33 +37,53 @@ def main():
         default=None, 
         help="Custom historical data period (e.g., '5d', '1mo', '1y'). If not provided, uses the strategy's default."
     )
+    parser.add_argument(
+        "--ticker",
+        type=str,
+        default=None,
+        help="Override Yahoo ticker for this backtest (e.g. AAPL, EURUSD=X)."
+    )
+    parser.add_argument(
+        "--interval",
+        type=str,
+        default=None,
+        help="Override candle interval for this backtest (e.g. 1h, 4h, 1d)."
+    )
     
     args = parser.parse_args()
 
+    ticker = (args.ticker or "").strip() or None
+    period = (args.period or "").strip() or None
+    interval = (args.interval or "").strip() or None
+
     print(f"Loading strategy from: {args.strategy}")
+    if ticker:
+        print(f"Ticker override: {ticker}")
+    if period:
+        print(f"Period override: {period}")
+    if interval:
+        print(f"Interval override: {interval}")
+
+    # Overrides are applied before the first Yahoo download.
     backtester = Backtesting(
-        strategy_path=args.strategy, 
-        initial_capital=args.capital, 
-        commission=args.commission
+        strategy_path=args.strategy,
+        initial_capital=args.capital,
+        commission=args.commission,
+        ticker=ticker,
+        period=period,
+        interval=interval,
     )
 
-    data = None
-    if args.period:
-        # Fetch via DataManager so resampled intervals (e.g. 4h) work
-        dm = backtester.strategy_manager.data_manager
+    dm = backtester.strategy_manager.data_manager
+    if dm.data is None or dm.data.empty:
         print(
-            f"Downloading custom historical data: {dm.ticker} | "
-            f"Interval: {dm.interval} | Period: {args.period}..."
+            f"Failed to download data for {dm.ticker} "
+            f"(interval={dm.interval}, period={dm.period}). Aborting."
         )
-        data = dm.fetch_data(dm.ticker, dm.interval, args.period)
-        if data.empty:
-            print("Failed to download custom data. Falling back to strategy default data.")
-            data = None
-        else:
-            print(f"Successfully downloaded {len(data)} rows of data.")
+        return
 
-    # Run the backtester
-    backtester.run_backtest(data=data)
+    print(f"Using {len(dm.data)} rows: {dm.ticker} | {dm.interval} | {dm.period}")
+    backtester.run_backtest()
 
 if __name__ == "__main__":
     main()

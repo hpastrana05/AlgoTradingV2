@@ -1,0 +1,46 @@
+{
+    "name": "Session Breakout Retest",
+    "ticker_API": "QQQ_US_EQ",
+    "ticker_data": "QQQ",
+    "interval": "15m",
+    "period": "max",
+    "action": "BUY",
+    "entry_rule": {
+        "type": "OR",
+        "signals": [
+            {
+                "type": "session_retest_long",
+                "session_hour": 15,
+                "session_minute": 30,
+                "entry_deadline_hour": 16,
+                "entry_deadline_minute": 15,
+                "breakout_buffer_pct": 0,
+                "retest_tolerance_pct": 15,
+                "win_units": 1.5,
+                "loss_units": 1
+            },
+            {
+                "type": "session_retest_short",
+                "session_hour": 15,
+                "session_minute": 30,
+                "entry_deadline_hour": 16,
+                "entry_deadline_minute": 15,
+                "breakout_buffer_pct": 0,
+                "retest_tolerance_pct": 15,
+                "win_units": 1.5,
+                "loss_units": 1
+            }
+        ]
+    },
+    "exit_rule": {
+        "type": "OR",
+        "signals": [
+            {
+                "type": "tp_session_ratio"
+            },
+            {
+                "type": "sl_session_mid"
+            }
+        ]
+    }
+}

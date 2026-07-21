@@ -22,9 +22,16 @@ class TradingEngine:
         self.broker_sync_manager.process_actions(ticker, action, price)
     
 
-    def run(self):
+    def run(self, stop_event=None):
+        # Optional stop_event lets the Live Trading panel stop this loop.
         while True:
+            if stop_event is not None and stop_event.is_set():
+                break
+
             sleep_until_next_interval(minutes=1, offset_seconds=1)
+
+            if stop_event is not None and stop_event.is_set():
+                break
 
             LOGGER.debug(f"Running Strategy at {datetime.now()}")
             self.update_market_data()

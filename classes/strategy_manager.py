@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Optional
 
 from .position import Position
 from .data_manager import DataManager
@@ -7,15 +8,39 @@ from .strategy import Strategy
 
 LOGGER = logging.getLogger("StrategyManager")
 
+
+def _normalize_broker_ticker(raw) -> Optional[str]:
+    """Trading212 ticker, or None when unset / explicitly 'None'."""
+    if raw is None:
+        return None
+    value = str(raw).strip()
+    if not value or value.lower() in ("none", "null", "-"):
+        return None
+    return value
+
+
 class StrategyManager:
-    def __init__(self, name:str, strategy:Strategy, position:Position, data_manager:DataManager):
+    def __init__(self, name: str, strategy: Strategy, position: Position, data_manager: DataManager):
         self.name = name
         self.strategy = strategy
         self.position = position
         self.data_manager = data_manager
 
     @classmethod
-    def from_json(cls, file_path:str):
+    def from_json(
+        cls,
+        file_path: str,
+        ticker: str = None,
+        period: str = None,
+        interval: str = None,
+    ):
+        """
+        Load a strategy. Optional ticker/period/interval override the JSON config
+        so backtests can swap instruments/timeframes without a wasted first download.
+
+        ticker override only affects the Yahoo/data ticker (ticker_data).
+        Broker symbol always comes from ticker_API in the strategy file.
+        """
         try:
             with open(file_path, 'r') as f:
                 config = json.load(f)
@@ -28,44 +53,57 @@ class StrategyManager:
                     exit_signal=exit_rule,
                 )
 
+                data_ticker = (ticker or "").strip() or config["ticker_data"]
+                broker_ticker = _normalize_broker_ticker(config.get("ticker_API"))
+                used_period = (period or "").strip() or config.get("period")
+                used_interval = (interval or "").strip() or config["interval"]
+
                 dm = DataManager(
-                    ticker=config["ticker_data"],
-                    interval=config["interval"],
-                    period=config.get("period"),
+                    ticker=data_ticker,
+                    interval=used_interval,
+                    period=used_period,
                 )
-                
-                position = Position(ticker=config["ticker_data"], action=config["action"])
-                
+
+                position = Position(
+                    ticker=data_ticker,
+                    action=config["action"],
+                    ticker_api=broker_ticker,
+                )
+
                 return cls(name=config["name"], strategy=strategy, position=position, data_manager=dm)
 
         except Exception as e:
             LOGGER.error(f"Error loading strategy from {file_path}: {e}")
             raise
 
-    
     def update_market_data(self):
         self.data_manager.update_data()
-    
+
     def check_strategy(self):
         current_price = self.data_manager.get_current_price()
+        # Broker calls must use Trading212 ticker_API (may be None).
+        broker_ticker = self.position.ticker_api
 
         # If we have an active position, only check for exit
         if self.position.is_open:
             if self.strategy.check_exit(self.data_manager.data, self.position):
                 LOGGER.info(f"Exit signal triggered for: {self.name}")
+                close_action = "SELL" if self.position.action == "BUY" else "BUY"
                 self.position.close()
-                return self.position.ticker, "SELL", current_price
-            return self.position.ticker, "HOLD", current_price
-        
+                return broker_ticker, close_action, current_price
+            return broker_ticker, "HOLD", current_price
+
         # If we do not have an active position, only check for entry
         else:
             if self.strategy.check_entry(self.data_manager.data, self.position):
                 LOGGER.info(f"Entry signal triggered for: {self.name}")
                 bar = self.data_manager.data.iloc[-1]
+                entry_action = self.position.intended_action or self.position.action
                 self.position.open(
                     entry_price=current_price,
                     candle_low=bar["Low"],
                     candle_high=bar["High"],
+                    action=entry_action,
                 )
-                return self.position.ticker, "BUY", current_price
-            return self.position.ticker, "HOLD", current_price
+                return broker_ticker, entry_action, current_price
+            return broker_ticker, "HOLD", current_price

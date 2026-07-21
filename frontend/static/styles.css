@@ -48,13 +48,18 @@
     box-sizing: border-box;
 }
 
+html,
+body {
+    height: 100%;
+}
+
 body {
     background-color: var(--bg-main);
     color: var(--text-primary);
     font-family: var(--font-body);
     font-size: 15px;
     line-height: 1.6;
-    overflow-x: hidden;
+    overflow: hidden;
     -webkit-font-smoothing: antialiased;
 }
 
@@ -79,19 +84,22 @@ body {
    ========================================================================== */
 .app-container {
     display: flex;
-    min-height: 100vh;
+    height: 100vh;
     width: 100vw;
+    overflow: hidden;
 }
 
-/* Sidebar Navigation */
+/* Sidebar Navigation — fixed, does not scroll with panels */
 .sidebar {
     width: 280px;
+    height: 100%;
     background-color: var(--bg-sidebar);
     border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
     padding: 24px;
     flex-shrink: 0;
+    overflow: hidden;
 }
 
 .sidebar-logo {
@@ -127,7 +135,15 @@ body {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    flex-grow: 1;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+}
+
+.sidebar-footer {
+    flex-shrink: 0;
+    padding-top: 20px;
+    border-top: 1px solid var(--border-color);
 }
 
 .nav-btn {
@@ -171,11 +187,6 @@ body {
     filter: drop-shadow(0 0 4px var(--primary-glow));
 }
 
-.sidebar-footer {
-    padding-top: 20px;
-    border-top: 1px solid var(--border-color);
-}
-
 .status-indicator {
     display: flex;
     align-items: center;
@@ -211,11 +222,14 @@ body {
     font-weight: 500;
 }
 
-/* Main Content Area */
+/* Main Content Area — only this pane scrolls */
 .main-content {
-    flex-grow: 1;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
     display: flex;
     flex-direction: column;
+    overflow-x: hidden;
     overflow-y: auto;
     padding: 32px 40px;
     background: radial-gradient(circle at 80% 10%, hsla(245, 75%, 65%, 0.03) 0%, transparent 40%),
@@ -467,24 +481,152 @@ textarea:focus {
    BACKTEST DASHBOARD LAYOUT
    ========================================================================== */
 .dashboard-grid {
-    display: grid;
-    grid-template-columns: 320px 1fr;
-    gap: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
 }
 
 .control-card {
-    grid-column: 1;
+    width: 100%;
+}
+
+.form-grid-horizontal {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 12px 14px;
+}
+
+.form-grid-horizontal .form-group {
+    flex: 1 1 150px;
+    min-width: 130px;
+    margin: 0;
+}
+
+.form-grid-horizontal .form-group-sm {
+    flex: 0 1 110px;
+    min-width: 96px;
+}
+
+.form-grid-horizontal #strategy-select,
+.form-grid-horizontal #backtest-ticker {
+    min-width: 140px;
+}
+
+.form-grid-horizontal .btn-run {
+    flex: 0 0 auto;
+    white-space: nowrap;
+    height: 42px;
+    padding: 0 18px;
+    margin-bottom: 0;
 }
 
 .metrics-grid {
-    grid-column: 2;
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     gap: 16px;
+    width: 100%;
 }
 
 .full-width {
-    grid-column: 1 / span 2;
+    width: 100%;
+}
+
+@media (max-width: 1100px) {
+    .metrics-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 640px) {
+    .metrics-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .form-grid-horizontal .form-group,
+    .form-grid-horizontal .form-group-sm {
+        flex: 1 1 100%;
+        min-width: 0;
+    }
+
+    .form-grid-horizontal .btn-run {
+        width: 100%;
+    }
+}
+
+/* ==========================================================================
+   LIVE TRADING PANEL
+   ========================================================================== */
+.live-layout {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.live-warning {
+    margin-top: 14px;
+    font-size: 12px;
+    color: var(--text-muted);
+}
+
+.live-warning.is-live {
+    color: var(--warning);
+    font-weight: 600;
+}
+
+.mode-badge {
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border-color);
+}
+
+.mode-badge.mode-demo {
+    color: var(--secondary);
+    background: hsla(175, 75%, 45%, 0.12);
+    border-color: hsla(175, 75%, 45%, 0.35);
+}
+
+.mode-badge.mode-live {
+    color: var(--warning);
+    background: hsla(35, 80%, 55%, 0.12);
+    border-color: hsla(35, 80%, 55%, 0.4);
+}
+
+.metric-value-sm {
+    font-size: 18px;
+    word-break: break-word;
+}
+
+.live-log-view {
+    margin: 0;
+    padding: 16px 18px;
+    min-height: 280px;
+    max-height: 420px;
+    overflow: auto;
+    background: hsl(222, 47%, 5%);
+    border-top: 1px solid var(--border-color);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.55;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.engine-running {
+    color: var(--success);
+}
+
+.engine-stopped {
+    color: var(--text-muted);
+}
+
+.engine-error {
+    color: var(--danger);
 }
 
 /* Metric Cards */

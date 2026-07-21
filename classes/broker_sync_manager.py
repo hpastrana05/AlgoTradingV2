@@ -84,17 +84,28 @@ class BrokerSyncManager:
         
 
     def process_actions(self, ticker, action, price):
+        if action == "HOLD":
+            return
+
+        # ticker must be Trading212 instrument id (strategy ticker_API)
+        if not ticker:
+            LOGGER.error(
+                "No Trading212 ticker_API configured for this strategy — "
+                "skipping broker action. Set ticker_API in the strategy JSON "
+                "(leave as None only for data/backtest-only strategies)."
+            )
+            return
+
         self.sync(ticker)
 
         if not self.check_ticker_availability(ticker):
             LOGGER.info(f"Ticker {ticker} is not available for trading now.")
             return
 
-
         if not self.is_synchronized:
             LOGGER.error("Cannot process actions due to synchronization errors.")
             return
-        
+
         if action == "BUY":
             self.execute_buy(ticker, price)
         elif action == "SELL":

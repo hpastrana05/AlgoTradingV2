@@ -19,8 +19,8 @@
     <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-    <!-- Custom CSS -->
-    <link rel="stylesheet" href="styles.css" />
+    <!-- Custom CSS (cache-bust when override/comparison UI changes) -->
+    <link rel="stylesheet" href="styles.css?v=20260720f" />
   </head>
   <body class="dark-theme">
     <div class="app-container">
@@ -38,6 +38,10 @@
           <button class="nav-btn active" data-tab="backtest">
             <i data-lucide="line-chart"></i>
             <span>Backtest Panel</span>
+          </button>
+          <button class="nav-btn" data-tab="live">
+            <i data-lucide="radio"></i>
+            <span>Live Trading</span>
           </button>
           <button class="nav-btn" data-tab="creator">
             <i data-lucide="cpu"></i>
@@ -87,7 +91,7 @@
                 <i data-lucide="settings"></i>
                 <h3>Simulation Configuration</h3>
               </div>
-              <form id="backtest-form" class="form-grid">
+              <form id="backtest-form" class="form-grid form-grid-horizontal">
                 <div class="form-group">
                   <label for="strategy-select">Select Strategy</label>
                   <select id="strategy-select" required>
@@ -97,8 +101,8 @@
                   </select>
                 </div>
 
-                <div class="form-group">
-                  <label for="backtest-capital">Initial Capital ($)</label>
+                <div class="form-group form-group-sm">
+                  <label for="backtest-capital">Capital ($)</label>
                   <input
                     type="number"
                     id="backtest-capital"
@@ -107,8 +111,8 @@
                   />
                 </div>
 
-                <div class="form-group">
-                  <label for="backtest-commission">Commission Rate (%)</label>
+                <div class="form-group form-group-sm">
+                  <label for="backtest-commission">Commission (%)</label>
                   <input
                     type="number"
                     id="backtest-commission"
@@ -118,13 +122,12 @@
                     step="0.01"
                     required
                   />
-                  <span class="input-hint">0.1% = 0.001</span>
                 </div>
 
-                <div class="form-group">
-                  <label for="backtest-period">Data Period (Override)</label>
+                <div class="form-group form-group-sm">
+                  <label for="backtest-period">Period</label>
                   <select id="backtest-period">
-                    <option value="">Default (Strategy config)</option>
+                    <option value="">Default</option>
                     <option value="1d">1 Day</option>
                     <option value="5d">5 Days</option>
                     <option value="1mo">1 Month</option>
@@ -134,14 +137,44 @@
                     <option value="2y">2 Years</option>
                     <option value="5y">5 Years</option>
                     <option value="10y">10 Years</option>
-                    <option value="ytd">Year to Date</option>
-                    <option value="max">Max Period</option>
+                    <option value="ytd">YTD</option>
+                    <option value="max">Max</option>
                   </select>
                 </div>
 
-                <button type="submit" class="btn btn-primary btn-block">
+                <div class="form-group form-group-sm">
+                  <label for="backtest-interval">Interval</label>
+                  <select id="backtest-interval">
+                    <option value="">Default</option>
+                    <option value="1m">1m</option>
+                    <option value="2m">2m</option>
+                    <option value="5m">5m</option>
+                    <option value="15m">15m</option>
+                    <option value="30m">30m</option>
+                    <option value="60m">60m</option>
+                    <option value="90m">90m</option>
+                    <option value="1h">1h</option>
+                    <option value="4h">4h</option>
+                    <option value="1d">1d</option>
+                    <option value="5d">5d</option>
+                    <option value="1wk">1wk</option>
+                    <option value="1mo">1mo</option>
+                    <option value="3mo">3mo</option>
+                  </select>
+                </div>
+
+                <div class="form-group">
+                  <label for="backtest-ticker">Ticker</label>
+                  <input
+                    type="text"
+                    id="backtest-ticker"
+                    placeholder="Strategy default"
+                  />
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-run">
                   <i data-lucide="play-circle"></i>
-                  <span>Run Simulation</span>
+                  <span>Run</span>
                 </button>
               </form>
             </div>
@@ -170,15 +203,59 @@
               <div class="metric-card">
                 <span class="metric-label">Final Portfolio Value</span>
                 <div class="metric-value" id="metric-final-val">$10,000.00</div>
-                <div class="metric-subtext">Cash + holdings value</div>
+                <div class="metric-subtext" id="metric-ticker-used">Cash + holdings value</div>
+              </div>
+            </div>
+
+            <!-- Comparison table -->
+            <div class="card full-width" id="comparison-card">
+              <div class="card-header justify-between">
+                <div class="flex-align">
+                  <i data-lucide="git-compare"></i>
+                  <h3>Ticker Comparison</h3>
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-clear-comparison">
+                  <i data-lucide="trash-2"></i> Clear
+                </button>
+              </div>
+              <div class="table-wrapper">
+                <table class="data-table" id="comparison-table">
+                  <thead>
+                    <tr>
+                      <th>Run</th>
+                      <th>Ticker</th>
+                      <th>Interval</th>
+                      <th>Period</th>
+                      <th>Strategy</th>
+                      <th>Return (%)</th>
+                      <th>Win Rate</th>
+                      <th>Trades</th>
+                      <th>Max DD</th>
+                      <th>Final $</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr class="empty-state-row">
+                      <td colspan="10">
+                        Run a backtest, change ticker/interval override, run again — rows pin here automatically.
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
               </div>
             </div>
 
             <!-- Chart Card -->
             <div class="card chart-card full-width">
-              <div class="card-header">
-                <i data-lucide="area-chart"></i>
-                <h3>Portfolio Growth Chart</h3>
+              <div class="card-header justify-between">
+                <div class="flex-align">
+                  <i data-lucide="area-chart"></i>
+                  <h3 id="chart-title">Portfolio Growth Chart</h3>
+                </div>
+                <label class="chart-mode-toggle flex-align" style="gap: 8px; font-size: 12px; color: var(--text-secondary);">
+                  <input type="checkbox" id="chart-compare-mode" checked />
+                  Overlay comparison runs
+                </label>
               </div>
               <div class="chart-wrapper">
                 <canvas id="portfolioChart"></canvas>
@@ -390,6 +467,87 @@
           </div>
         </section>
 
+        <!-- Tab Content: Live Trading -->
+        <section id="tab-live" class="tab-pane">
+          <div class="live-layout">
+            <div class="card control-card">
+              <div class="card-header justify-between">
+                <div class="flex-align">
+                  <i data-lucide="radio"></i>
+                  <h3>Run Strategy</h3>
+                </div>
+                <div id="live-mode-badge" class="mode-badge mode-demo">DEMO</div>
+              </div>
+
+              <form id="live-form" class="form-grid form-grid-horizontal">
+                <div class="form-group">
+                  <label for="live-strategy-select">Strategy</label>
+                  <select id="live-strategy-select" required>
+                    <option value="" disabled selected>Choose a strategy...</option>
+                  </select>
+                </div>
+
+                <div class="form-group form-group-sm">
+                  <label for="live-mode-select">Trading Mode</label>
+                  <select id="live-mode-select">
+                    <option value="demo" selected>Demo</option>
+                    <option value="live">Live</option>
+                  </select>
+                </div>
+
+                <button type="submit" class="btn btn-primary btn-run" id="btn-live-start">
+                  <i data-lucide="play"></i>
+                  <span>Start</span>
+                </button>
+                <button type="button" class="btn btn-secondary btn-run" id="btn-live-stop" disabled>
+                  <i data-lucide="square"></i>
+                  <span>Stop</span>
+                </button>
+              </form>
+
+              <p class="live-warning" id="live-warning">
+                Demo uses paper trading credentials. Live places real orders on Trading212.
+              </p>
+            </div>
+
+            <div class="metrics-grid live-status-grid">
+              <div class="metric-card">
+                <span class="metric-label">Engine</span>
+                <div class="metric-value" id="live-engine-state">Stopped</div>
+                <div class="metric-subtext" id="live-engine-since">Not running</div>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Strategy</span>
+                <div class="metric-value metric-value-sm" id="live-strategy-name">—</div>
+                <div class="metric-subtext" id="live-strategy-meta">Select a strategy to run</div>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Mode</span>
+                <div class="metric-value metric-value-sm" id="live-mode-label">Demo</div>
+                <div class="metric-subtext" id="live-creds-label">Credentials: —</div>
+              </div>
+              <div class="metric-card">
+                <span class="metric-label">Last Tick</span>
+                <div class="metric-value metric-value-sm" id="live-last-tick">—</div>
+                <div class="metric-subtext" id="live-last-error">No errors</div>
+              </div>
+            </div>
+
+            <div class="card full-width">
+              <div class="card-header justify-between">
+                <div class="flex-align">
+                  <i data-lucide="terminal"></i>
+                  <h3>Engine Log</h3>
+                </div>
+                <button type="button" class="btn btn-secondary btn-sm" id="btn-live-refresh">
+                  <i data-lucide="refresh-cw"></i> Refresh
+                </button>
+              </div>
+              <pre id="live-log-view" class="live-log-view">Waiting for engine activity…</pre>
+            </div>
+          </div>
+        </section>
+
         <!-- Tab Content: Strategies List -->
         <section id="tab-strategies" class="tab-pane">
           <div class="strategies-list-container" id="strategies-cards-grid">
@@ -403,7 +561,7 @@
       </main>
     </div>
 
-    <!-- Script imports -->
-    <script src="app.js"></script>
+    <!-- Script imports (cache-bust when override/comparison UI changes) -->
+    <script src="app.js?v=20260720g"></script>
   </body>
 </html>

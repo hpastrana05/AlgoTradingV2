@@ -8,8 +8,21 @@ LOGGER = logging.getLogger("Backtesting")
 
 class Backtesting:
 
-    def __init__(self, strategy_path, initial_capital=10000.0, commission=0.0):
-        self.strategy_manager = StrategyManager.from_json(strategy_path)
+    def __init__(
+        self,
+        strategy_path,
+        initial_capital=10000.0,
+        commission=0.0,
+        ticker=None,
+        period=None,
+        interval=None,
+    ):
+        self.strategy_manager = StrategyManager.from_json(
+            strategy_path,
+            ticker=ticker,
+            period=period,
+            interval=interval,
+        )
         self.initial_capital = initial_capital
         self.commission = commission
 
@@ -32,8 +45,18 @@ class Backtesting:
         cash = self.initial_capital
         shares = 0.0
         position_active = False
+        position_side = None  # "LONG" or "SHORT"
+        entry_capital = 0.0
+        short_entry_price = None
         trades = []
         portfolio_value_history = []
+
+        def _portfolio_value(market_price):
+            if not position_active:
+                return cash
+            if position_side == "LONG":
+                return shares * market_price
+            return entry_capital + shares * (short_entry_price - market_price)
 
         LOGGER.info(f"Starting backtest on {len(full_data)} data rows with initial capital: {self.initial_capital}")
 
@@ -54,46 +77,81 @@ class Backtesting:
 
             # Execute trade simulation based on strategy action
             if action == "BUY" and not position_active:
-                # Buy position
+                entry_capital = cash
                 buy_cost = cash * (1.0 - self.commission)
                 shares = buy_cost / price
-                portfolio_val_before = cash
                 cash = 0.0
                 position_active = True
-                
+                position_side = "LONG"
+
                 trades.append({
                     "type": "BUY",
+                    "side": "LONG",
                     "timestamp": current_row.name,
                     "price": price,
                     "shares": shares,
-                    "cash": cash,
-                    "portfolio_value": portfolio_val_before
+                    "portfolio_value": entry_capital,
                 })
                 LOGGER.debug(f"[{current_row.name}] BUY {shares:.4f} shares of {ticker} at {price:.2f}")
 
-            elif action == "SELL" and position_active:
-                # Sell position
-                sell_revenue = shares * price * (1.0 - self.commission)
-                cash = sell_revenue
+            elif action == "SELL" and not position_active:
+                entry_capital = cash
+                shares = cash * (1.0 - self.commission) / price
+                short_entry_price = price
+                position_active = True
+                position_side = "SHORT"
+
+                trades.append({
+                    "type": "SHORT",
+                    "side": "SHORT",
+                    "timestamp": current_row.name,
+                    "price": price,
+                    "shares": shares,
+                    "portfolio_value": entry_capital,
+                })
+                LOGGER.debug(f"[{current_row.name}] SHORT {shares:.4f} shares of {ticker} at {price:.2f}")
+
+            elif action == "SELL" and position_active and position_side == "LONG":
+                cash = shares * price * (1.0 - self.commission)
                 old_shares = shares
                 shares = 0.0
                 position_active = False
-                
-                # Reset entry state in strategy manager
+                position_side = None
+
                 self.strategy_manager.position.close()
-                
+
                 trades.append({
                     "type": "SELL",
+                    "side": "LONG",
                     "timestamp": current_row.name,
                     "price": price,
                     "shares": old_shares,
-                    "cash": cash,
-                    "portfolio_value": sell_revenue
+                    "portfolio_value": cash,
                 })
                 LOGGER.debug(f"[{current_row.name}] SELL {old_shares:.4f} shares of {ticker} at {price:.2f}")
 
-            # Keep track of portfolio value at each step
-            current_val = cash + (shares * price if position_active else 0.0)
+            elif action == "BUY" and position_active and position_side == "SHORT":
+                gross_pnl = shares * (short_entry_price - price)
+                cash = entry_capital + gross_pnl * (1.0 - self.commission)
+                old_shares = shares
+                shares = 0.0
+                short_entry_price = None
+                position_active = False
+                position_side = None
+
+                self.strategy_manager.position.close()
+
+                trades.append({
+                    "type": "COVER",
+                    "side": "SHORT",
+                    "timestamp": current_row.name,
+                    "price": price,
+                    "shares": old_shares,
+                    "portfolio_value": cash,
+                })
+                LOGGER.debug(f"[{current_row.name}] COVER {old_shares:.4f} shares of {ticker} at {price:.2f}")
+
+            current_val = _portfolio_value(price)
             portfolio_value_history.append({
                 "timestamp": current_row.name,
                 "portfolio_value": current_val,
@@ -107,24 +165,33 @@ class Backtesting:
         if position_active:
             last_row = full_data.iloc[-1]
             last_price = last_row["Close"]
-            sell_revenue = shares * last_price * (1.0 - self.commission)
-            cash = sell_revenue
+
+            if position_side == "LONG":
+                cash = shares * last_price * (1.0 - self.commission)
+                exit_type = "FORCE_SELL"
+            else:
+                gross_pnl = shares * (short_entry_price - last_price)
+                cash = entry_capital + gross_pnl * (1.0 - self.commission)
+                exit_type = "FORCE_COVER"
+
             old_shares = shares
             shares = 0.0
             position_active = False
+            position_side = None
             self.strategy_manager.position.close()
-            
+
             trades.append({
-                "type": "FORCE_SELL",
+                "type": exit_type,
                 "timestamp": last_row.name,
                 "price": last_price,
                 "shares": old_shares,
-                "cash": cash,
-                "portfolio_value": sell_revenue
+                "portfolio_value": cash,
             })
-            LOGGER.info(f"[{last_row.name}] FORCE CLOSE open position of {old_shares:.4f} shares at {last_price:.2f}")
-            
-            # Update the last history entry
+            LOGGER.info(
+                f"[{last_row.name}] FORCE CLOSE open position of "
+                f"{old_shares:.4f} shares at {last_price:.2f}"
+            )
+
             if portfolio_value_history:
                 portfolio_value_history[-1]["portfolio_value"] = cash
 
@@ -140,24 +207,25 @@ class Backtesting:
 
         # Group trades into pairs of Buy and Sell
         trade_pairs = []
-        buy_trade = None
+        open_trade = None
         for t in trades:
-            if t["type"] == "BUY":
-                buy_trade = t
-            elif t["type"] in ["SELL", "FORCE_SELL"] and buy_trade is not None:
-                pnl = t["portfolio_value"] - buy_trade["portfolio_value"]
-                ret = (pnl / buy_trade["portfolio_value"]) * 100
+            if t["type"] in ("BUY", "SHORT"):
+                open_trade = t
+            elif t["type"] in ("SELL", "COVER", "FORCE_SELL", "FORCE_COVER") and open_trade is not None:
+                pnl = t["portfolio_value"] - open_trade["portfolio_value"]
+                ret = (pnl / open_trade["portfolio_value"]) * 100
                 trade_pairs.append({
-                    "buy_time": buy_trade["timestamp"],
-                    "buy_price": buy_trade["price"],
+                    "side": open_trade.get("side", "LONG"),
+                    "buy_time": open_trade["timestamp"],
+                    "buy_price": open_trade["price"],
                     "sell_time": t["timestamp"],
                     "sell_price": t["price"],
-                    "shares": buy_trade["shares"],
+                    "shares": open_trade["shares"],
                     "pnl": pnl,
                     "return_pct": ret,
                     "exit_type": t["type"]
                 })
-                buy_trade = None
+                open_trade = None
 
         total_trades = len(trade_pairs)
         winning_trades = len([tp for tp in trade_pairs if tp["pnl"] > 0])
@@ -204,13 +272,18 @@ class Backtesting:
         print("="*70)
         if summary['trade_pairs']:
             print("\nTRADE LOG:")
-            print(f"{'Buy Date':<20} | {'Buy Price':<10} | {'Sell Date':<20} | {'Sell Price':<10} | {'PnL ($)':<10} | {'Return (%)':<10}")
-            print("-"*85)
+            print(f"{'Entry Date':<20} | {'Side':<6} | {'Entry':<10} | {'Exit Date':<20} | {'Exit':<10} | {'PnL ($)':<10} | {'Return (%)':<10}")
+            print("-"*95)
             for tp in summary['trade_pairs']:
-                buy_time_str = str(tp['buy_time'])
-                sell_time_str = str(tp['sell_time'])
-                # Shorten date format if too long
-                if len(buy_time_str) > 19: buy_time_str = buy_time_str[:19]
-                if len(sell_time_str) > 19: sell_time_str = sell_time_str[:19]
-                print(f"{buy_time_str:<20} | {tp['buy_price']:<10.2f} | {sell_time_str:<20} | {tp['sell_price']:<10.2f} | {tp['pnl']:<10.2f} | {tp['return_pct']:<10.2f}%")
-            print("="*85)
+                entry_time_str = str(tp['buy_time'])
+                exit_time_str = str(tp['sell_time'])
+                if len(entry_time_str) > 19:
+                    entry_time_str = entry_time_str[:19]
+                if len(exit_time_str) > 19:
+                    exit_time_str = exit_time_str[:19]
+                print(
+                    f"{entry_time_str:<20} | {tp.get('side', 'LONG'):<6} | "
+                    f"{tp['buy_price']:<10.2f} | {exit_time_str:<20} | "
+                    f"{tp['sell_price']:<10.2f} | {tp['pnl']:<10.2f} | {tp['return_pct']:<10.2f}%"
+                )
+            print("="*95)

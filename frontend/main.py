@@ -15,6 +15,8 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from classes.backtesting import Backtesting
+from classes.live_runner import live_runner
+import config
 import signals.entry_exit_signals as entry_exit_signals
 
 # Setup logging
@@ -24,6 +26,29 @@ LOGGER = logging.getLogger("FrontendAPI")
 app = FastAPI(title="AlgoTrading V2 Control Center")
 
 STRATEGIES_DIR = os.path.join(parent_dir, "strategies")
+
+# Not exposed in the strategy builder UI (handled internally by the engine).
+HIDDEN_SIGNAL_PARAMS = {"session_tz"}
+
+
+def _sanitize_rule(rule: dict) -> dict:
+    """Remove deprecated/internal keys from entry/exit rule trees."""
+    if not rule:
+        return rule
+
+    cleaned = dict(rule)
+    cleaned.pop("session_tz", None)
+
+    if cleaned.get("type") in ("AND", "OR") and "signals" in cleaned:
+        cleaned["signals"] = [
+            _sanitize_rule(s) for s in cleaned["signals"] if s is not None
+        ]
+    else:
+        for key in list(cleaned.keys()):
+            if key in HIDDEN_SIGNAL_PARAMS:
+                cleaned.pop(key, None)
+
+    return cleaned
 
 
 def _ensure_strategies_dir():
@@ -44,8 +69,8 @@ def _strategy_to_dict(strategy: "StrategyConfig") -> dict:
         "interval": strategy.interval,
         "period": strategy.period,
         "action": strategy.action,
-        "entry_rule": strategy.entry_rule,
-        "exit_rule": strategy.exit_rule,
+        "entry_rule": _sanitize_rule(strategy.entry_rule),
+        "exit_rule": _sanitize_rule(strategy.exit_rule),
     }
 
 
@@ -57,12 +82,15 @@ def get_signal_metadata() -> List[Dict[str, Any]]:
             sig = inspect.signature(obj)
             params = []
             for param_name, param in sig.parameters.items():
-                if param_name in ('data', 'position') or param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
+                if param_name in ('data', 'position') or param_name in HIDDEN_SIGNAL_PARAMS:
+                    continue
+                if param.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD):
                     continue
                 
                 default_val = param.default if param.default is not inspect.Parameter.empty else None
                 input_type = "number"
                 description = f"Value for {param_name}"
+                required = default_val is None
                 
                 if param_name == "values":
                     input_type = "array"
@@ -73,17 +101,26 @@ def get_signal_metadata() -> List[Dict[str, Any]]:
                     description = "Risk units in the ratio (e.g. 1 for 1:3 risk-reward)"
                 elif param_name == "win_units":
                     description = "Reward units in the ratio (e.g. 3 for 1:3 risk-reward)"
+                elif param_name in ("session_hour", "session_minute"):
+                    description = f"Anchor candle time ({param_name}), Europe/Madrid"
+                elif param_name in ("entry_deadline_hour", "entry_deadline_minute"):
+                    description = f"Last entry time ({param_name}), Europe/Madrid"
                 elif param_name in (
                     "fast", "slow", "ema_value", "sma_value", "ma_value",
                     "ema1", "ema2", "rsi_value", "lower", "upper",
                 ):
                     description = f"Indicator period or limit for {param_name}"
+                elif param_name == "breakout_buffer_pct":
+                    description = "Extra % of the anchor candle range required beyond high/low for breakout"
+                elif param_name == "retest_tolerance_pct":
+                    description = "% of the anchor candle range allowed when retesting the broken level"
                 
                 params.append({
                     "name": param_name,
                     "type": input_type,
                     "default": default_val,
-                    "description": description
+                    "description": description,
+                    "required": required,
                 })
             
             signals_list.append({
@@ -109,6 +146,13 @@ class BacktestRequest(BaseModel):
     capital: float = Field(default=10000.0, ge=1.0)
     commission: float = Field(default=0.001, ge=0.0, le=1.0)
     period: Optional[str] = None
+    ticker: Optional[str] = None
+    interval: Optional[str] = None
+
+
+class LiveStartRequest(BaseModel):
+    strategy_file: str
+    is_demo: bool = True
 
 # Endpoints
 @app.get("/api/signals")
@@ -192,28 +236,45 @@ def api_run_backtest(req: BacktestRequest):
         raise HTTPException(status_code=404, detail="Strategy file not found")
         
     try:
+        ticker_override = (req.ticker or "").strip() or None
+        period_override = (req.period or "").strip() or None
+        interval_override = (req.interval or "").strip() or None
+
+        if ticker_override:
+            LOGGER.info(f"Ticker override: {ticker_override}")
+        if period_override:
+            LOGGER.info(f"Period override: {period_override}")
+        if interval_override:
+            LOGGER.info(f"Interval override: {interval_override}")
+
+        # Apply overrides before the first Yahoo download (no wasted fetch).
         backtester = Backtesting(
             strategy_path=strat_path,
             initial_capital=req.capital,
-            commission=req.commission
+            commission=req.commission,
+            ticker=ticker_override,
+            period=period_override,
+            interval=interval_override,
         )
-        
-        data = None
-        if req.period:
-            dm = backtester.strategy_manager.data_manager
-            LOGGER.info(
-                f"Downloading custom backtest data: {dm.ticker} | {dm.interval} | {req.period}"
+        sm = backtester.strategy_manager
+        dm = sm.data_manager
+        used_ticker = dm.ticker
+        used_period = dm.period
+
+        if dm.data is None or dm.data.empty:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"No data for ticker '{used_ticker}' "
+                    f"(interval={dm.interval}, period={used_period})"
+                ),
             )
-            data = dm.fetch_data(dm.ticker, dm.interval, req.period)
-            if data.empty:
-                LOGGER.warning("Downloaded custom data was empty, falling back to config default")
-                data = None
-                
-        results = backtester.run_backtest(data=data)
-        
+
+        results = backtester.run_backtest()
+
         if not results:
              raise HTTPException(status_code=500, detail="Backtest completed with no results")
-             
+
         formatted_trade_pairs = []
         for tp in results["trade_pairs"]:
             formatted_trade_pairs.append({
@@ -221,7 +282,7 @@ def api_run_backtest(req: BacktestRequest):
                 "buy_time": str(tp["buy_time"]),
                 "sell_time": str(tp["sell_time"])
             })
-            
+
         formatted_history = []
         for h in results["portfolio_history"]:
             formatted_history.append({
@@ -229,9 +290,12 @@ def api_run_backtest(req: BacktestRequest):
                 "portfolio_value": float(h["portfolio_value"]),
                 "close_price": float(h["close_price"])
             })
-            
+
         return {
-            "strategy_name": results["strategy_name"] if "strategy_name" in results else backtester.strategy_manager.name,
+            "strategy_name": results["strategy_name"] if "strategy_name" in results else sm.name,
+            "ticker": used_ticker,
+            "interval": dm.interval,
+            "period": used_period,
             "initial_capital": results["initial_capital"],
             "final_value": results["final_value"],
             "total_pnl": results["total_pnl"],
@@ -245,9 +309,61 @@ def api_run_backtest(req: BacktestRequest):
             "portfolio_history": formatted_history
         }
         
+    except HTTPException:
+        raise
     except Exception as e:
         LOGGER.exception("Backtest execution failed")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/live/status")
+def api_live_status():
+    """Current live engine status and trading mode."""
+    return live_runner.status()
+
+
+@app.get("/api/live/logs")
+def api_live_logs(limit: int = 100):
+    """Recent live engine log lines."""
+    return {"logs": live_runner.logs(limit=limit)}
+
+
+@app.post("/api/live/start")
+def api_live_start(req: LiveStartRequest):
+    """Start the trading engine for a strategy in demo or live mode."""
+    strat_path = os.path.join(STRATEGIES_DIR, req.strategy_file)
+    if not os.path.exists(strat_path):
+        raise HTTPException(status_code=404, detail="Strategy file not found")
+
+    if not req.is_demo:
+        LOGGER.warning("LIVE mode start requested — real money orders may be placed.")
+
+    try:
+        return live_runner.start(strat_path, is_demo=req.is_demo)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        LOGGER.exception("Failed to start live engine")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/live/stop")
+def api_live_stop():
+    """Stop the running trading engine."""
+    try:
+        return live_runner.stop()
+    except Exception as e:
+        LOGGER.exception("Failed to stop live engine")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/live/mode")
+def api_live_mode():
+    """Return current Trading212 mode without starting the engine."""
+    return config.get_trading_mode()
+
 
 # Setup Static files mounting
 static_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
