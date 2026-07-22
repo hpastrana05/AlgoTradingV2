@@ -6,7 +6,9 @@ const state = {
     editingFile: null, // Filename being edited, or null when creating
     lastResult: null,  // Latest backtest result
     comparisonRuns: [], // Pinned runs for ticker comparison
-    livePollTimer: null
+    livePollTimer: null,
+    alertsPollTimer: null,
+    alerts: []
 };
 
 const COMPARISON_COLORS = [
@@ -84,6 +86,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Live trading panel
     initLivePanel();
+    // Telegram alerts panel
+    initAlertsPanel();
 });
 
 // Tab navigation handler
@@ -99,6 +103,10 @@ function initTabs() {
         'live': {
             title: 'Live Trading',
             desc: 'Run a strategy 24/7 against Trading212 in Demo or Live mode.'
+        },
+        'alerts': {
+            title: 'Telegram Alerts',
+            desc: 'Watch strategies or price levels and get notified on Telegram.'
         },
         'creator': {
             title: 'Strategy Creator',
@@ -143,6 +151,15 @@ function initTabs() {
             } else {
                 stopLivePolling();
             }
+            if (targetTab === 'alerts') {
+                refreshTelegramStatus();
+                refreshAlertsList();
+                refreshAlertsMonitor();
+                refreshAlertsLogs();
+                startAlertsPolling();
+            } else {
+                stopAlertsPolling();
+            }
         });
     });
 }
@@ -179,6 +196,11 @@ function populateStrategiesDropdown() {
     if (liveSelect) {
         liveSelect.innerHTML = '<option value="" disabled selected>Choose a strategy...</option>';
     }
+
+    const alertSelect = document.getElementById('alert-strategy-select');
+    if (alertSelect) {
+        alertSelect.innerHTML = '<option value="" disabled selected>Choose a strategy...</option>';
+    }
     
     state.strategies.forEach(strat => {
         const option = document.createElement('option');
@@ -190,6 +212,10 @@ function populateStrategiesDropdown() {
         if (liveSelect) {
             const liveOpt = option.cloneNode(true);
             liveSelect.appendChild(liveOpt);
+        }
+        if (alertSelect) {
+            const alertOpt = option.cloneNode(true);
+            alertSelect.appendChild(alertOpt);
         }
     });
 }
@@ -1368,3 +1394,6 @@ async function stopLiveEngine() {
         lucide.createIcons();
     }
 }
+
+// Alerts panel lives in alerts_panel.js (loaded after this file).
+

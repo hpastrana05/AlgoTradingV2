@@ -151,6 +151,10 @@ activemq-data/
 .env
 .envrc
 .venv
+
+# Local alert / Telegram secrets (UI-managed)
+alerts/telegram.json
+alerts/runtime.json
 env/
 venv/
 ENV/

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "d2ba53ec-357b-4c58-9f6c-71a55c4dfc59",
+    "name": "Candle 15:30 retest",
+    "type": "strategy",
+    "enabled": true,
+    "created_at": "2026-07-22T14:06:14",
+    "updated_at": "2026-07-22T14:06:14",
+    "last_triggered_at": null,
+    "last_message": null,
+    "last_error": null,
+    "trigger_count": 0,
+    "strategy_file": "session_breakout_retest.json",
+    "notify_on": [
+      "entry",
+      "exit"
+    ],
+    "tickers": [
+      "QQQ",
+      "EURUSD=X"
+    ]
+  }
+]

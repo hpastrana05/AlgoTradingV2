@@ -16,6 +16,9 @@ if parent_dir not in sys.path:
 
 from classes.backtesting import Backtesting
 from classes.live_runner import live_runner
+from classes.alert_runner import alert_runner
+from classes import alert_store
+from classes import telegram_notifier
 import config
 import signals.entry_exit_signals as entry_exit_signals
 
@@ -156,6 +159,45 @@ class BacktestRequest(BaseModel):
 class LiveStartRequest(BaseModel):
     strategy_file: str
     is_demo: bool = True
+
+
+class TelegramConfigRequest(BaseModel):
+    bot_token: Optional[str] = None
+    chat_id: Optional[str] = None
+
+
+class TelegramTestRequest(BaseModel):
+    message: Optional[str] = "AlgoTrading V2: Telegram connected."
+
+
+class AlertCreateRequest(BaseModel):
+    name: str
+    type: str  # strategy | price
+    enabled: bool = True
+    strategy_file: Optional[str] = None
+    notify_on: Optional[List[str]] = None
+    ticker: Optional[str] = None
+    tickers: Optional[List[str]] = None
+    condition: Optional[str] = None  # above | below
+    price: Optional[float] = None
+    interval: Optional[str] = "15m"
+    period: Optional[str] = "5d"
+    once: bool = True
+
+
+class AlertUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    enabled: Optional[bool] = None
+    strategy_file: Optional[str] = None
+    notify_on: Optional[List[str]] = None
+    ticker: Optional[str] = None
+    tickers: Optional[List[str]] = None
+    condition: Optional[str] = None
+    price: Optional[float] = None
+    interval: Optional[str] = None
+    period: Optional[str] = None
+    once: Optional[bool] = None
+
 
 # Endpoints
 @app.get("/api/signals")
@@ -367,6 +409,108 @@ def api_live_stop():
 def api_live_mode():
     """Return current Trading212 mode without starting the engine."""
     return config.get_trading_mode()
+
+
+# ---------------------------------------------------------------------------
+# Telegram + Alerts
+# ---------------------------------------------------------------------------
+
+@app.get("/api/telegram/status")
+def api_telegram_status():
+    return telegram_notifier.public_telegram_status()
+
+
+@app.put("/api/telegram/config")
+def api_telegram_config(req: TelegramConfigRequest):
+    try:
+        return telegram_notifier.save_telegram_config(
+            bot_token=req.bot_token,
+            chat_id=req.chat_id,
+        )
+    except Exception as e:
+        LOGGER.exception("Failed to save Telegram config")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/telegram/test")
+def api_telegram_test(req: TelegramTestRequest):
+    result = telegram_notifier.send_telegram_message(req.message or "AlgoTrading V2: Telegram connected.")
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Send failed")
+    return {"status": "sent"}
+
+
+@app.get("/api/alerts")
+def api_list_alerts():
+    return {"alerts": alert_store.load_alerts()}
+
+
+@app.post("/api/alerts")
+def api_create_alert(req: AlertCreateRequest):
+    try:
+        alert = alert_store.create_alert(req.model_dump())
+        return alert
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        LOGGER.exception("Failed to create alert")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/alerts/monitor/status")
+def api_alerts_monitor_status():
+    return alert_runner.status()
+
+
+@app.get("/api/alerts/monitor/logs")
+def api_alerts_monitor_logs(limit: int = 100):
+    return {"logs": alert_runner.logs(limit=limit)}
+
+
+@app.post("/api/alerts/monitor/start")
+def api_alerts_monitor_start():
+    try:
+        return alert_runner.start()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    except Exception as e:
+        LOGGER.exception("Failed to start alert monitor")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/alerts/monitor/stop")
+def api_alerts_monitor_stop():
+    try:
+        return alert_runner.stop()
+    except Exception as e:
+        LOGGER.exception("Failed to stop alert monitor")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/alerts/{alert_id}")
+def api_update_alert(alert_id: str, req: AlertUpdateRequest):
+    try:
+        payload = {k: v for k, v in req.model_dump().items() if v is not None}
+        return alert_store.update_alert(alert_id, payload)
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        LOGGER.exception("Failed to update alert")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/alerts/{alert_id}")
+def api_delete_alert(alert_id: str):
+    try:
+        alert_store.delete_alert(alert_id)
+        return {"status": "deleted", "id": alert_id}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        LOGGER.exception("Failed to delete alert")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # Setup Static files mounting

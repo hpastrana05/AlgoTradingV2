@@ -61,3 +61,11 @@ def get_trading_mode() -> dict:
 # Initialize from default IS_DEMO without failing hard if .env is incomplete
 # (live panel / start will validate credentials explicitly).
 API_KEY, API_SECRET, API_LINK = _resolve_credentials(IS_DEMO)
+
+
+def get_telegram_env() -> dict:
+    """Optional Telegram defaults from .env (UI config can override)."""
+    return {
+        "bot_token": (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip(),
+        "chat_id": (os.getenv("TELEGRAM_CHAT_ID") or "").strip(),
+    }

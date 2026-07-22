@@ -20,7 +20,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
     <!-- Custom CSS (cache-bust when override/comparison UI changes) -->
-    <link rel="stylesheet" href="styles.css?v=20260720f" />
+    <link rel="stylesheet" href="styles.css?v=20260722a" />
   </head>
   <body class="dark-theme">
     <div class="app-container">
@@ -42,6 +42,10 @@
           <button class="nav-btn" data-tab="live">
             <i data-lucide="radio"></i>
             <span>Live Trading</span>
+          </button>
+          <button class="nav-btn" data-tab="alerts">
+            <i data-lucide="bell"></i>
+            <span>Telegram Alerts</span>
           </button>
           <button class="nav-btn" data-tab="creator">
             <i data-lucide="cpu"></i>
@@ -562,6 +566,218 @@
           </div>
         </section>
 
+        <!-- Tab Content: Telegram Alerts -->
+        <section id="tab-alerts" class="tab-pane">
+          <div class="live-layout">
+            <!-- Telegram config -->
+            <div class="card control-card">
+              <div class="card-header justify-between">
+                <div class="flex-align">
+                  <i data-lucide="send"></i>
+                  <h3>Telegram Bot</h3>
+                </div>
+                <div id="telegram-status-badge" class="mode-badge mode-demo">NOT SET</div>
+              </div>
+              <form id="telegram-form" class="form-grid form-grid-horizontal">
+                <div class="form-group">
+                  <label for="telegram-bot-token">Bot Token</label>
+                  <input
+                    type="password"
+                    id="telegram-bot-token"
+                    placeholder="From @BotFather"
+                    autocomplete="off"
+                  />
+                </div>
+                <div class="form-group form-group-sm">
+                  <label for="telegram-chat-id">Chat ID</label>
+                  <input
+                    type="text"
+                    id="telegram-chat-id"
+                    placeholder="Your chat / group id"
+                    autocomplete="off"
+                  />
+                </div>
+                <button type="submit" class="btn btn-primary btn-run" id="btn-telegram-save">
+                  <i data-lucide="save"></i>
+                  <span>Save</span>
+                </button>
+                <button type="button" class="btn btn-secondary btn-run" id="btn-telegram-test">
+                  <i data-lucide="message-circle"></i>
+                  <span>Test</span>
+                </button>
+              </form>
+              <p class="live-warning" id="telegram-hint">
+                Create a bot with @BotFather, then get your chat id (e.g. @userinfobot).
+                You can also set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env.
+              </p>
+            </div>
+
+            <!-- Monitor controls -->
+            <div class="card control-card">
+              <div class="card-header justify-between">
+                <div class="flex-align">
+                  <i data-lucide="radar"></i>
+                  <h3>Alert Monitor</h3>
+                </div>
+                <div id="alerts-monitor-badge" class="mode-badge mode-demo">STOPPED</div>
+              </div>
+              <div class="form-grid form-grid-horizontal">
+                <button type="button" class="btn btn-primary btn-run" id="btn-alerts-start">
+                  <i data-lucide="play"></i>
+                  <span>Start Monitor</span>
+                </button>
+                <button type="button" class="btn btn-secondary btn-run" id="btn-alerts-stop" disabled>
+                  <i data-lucide="square"></i>
+                  <span>Stop</span>
+                </button>
+                <button type="button" class="btn btn-secondary btn-run" id="btn-alerts-refresh">
+                  <i data-lucide="refresh-cw"></i>
+                  <span>Refresh</span>
+                </button>
+              </div>
+              <div class="metrics-grid live-status-grid" style="margin-top: 16px;">
+                <div class="metric-card">
+                  <span class="metric-label">Monitor</span>
+                  <div class="metric-value" id="alerts-engine-state">Stopped</div>
+                  <div class="metric-subtext" id="alerts-engine-since">Not running</div>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-label">Enabled Alerts</span>
+                  <div class="metric-value metric-value-sm" id="alerts-enabled-count">0</div>
+                  <div class="metric-subtext" id="alerts-total-count">0 total</div>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-label">Messages Sent</span>
+                  <div class="metric-value metric-value-sm" id="alerts-messages-sent">0</div>
+                  <div class="metric-subtext" id="alerts-last-tick">Last tick: —</div>
+                </div>
+                <div class="metric-card">
+                  <span class="metric-label">Poll Interval</span>
+                  <div class="metric-value metric-value-sm" id="alerts-poll-seconds">60s</div>
+                  <div class="metric-subtext" id="alerts-last-error">No errors</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Create alert -->
+            <div class="card control-card">
+              <div class="card-header">
+                <i data-lucide="plus-circle"></i>
+                <h3>Create Alert</h3>
+              </div>
+              <form id="alert-create-form" class="form-grid">
+                <div class="form-group">
+                  <label for="alert-name">Name</label>
+                  <input type="text" id="alert-name" required placeholder="e.g. QQQ session entry" />
+                </div>
+                <div class="form-group form-group-sm">
+                  <label for="alert-type">Type</label>
+                  <select id="alert-type">
+                    <option value="strategy" selected>Strategy signal</option>
+                    <option value="price">Price level</option>
+                  </select>
+                </div>
+
+                <div id="alert-strategy-fields" class="alert-type-fields">
+                  <div class="form-group">
+                    <label for="alert-strategy-select">Strategy</label>
+                    <select id="alert-strategy-select">
+                      <option value="" disabled selected>Choose a strategy...</option>
+                    </select>
+                  </div>
+                  <div class="form-group">
+                    <label for="alert-strategy-tickers">Tickers (optional)</label>
+                    <input
+                      type="text"
+                      id="alert-strategy-tickers"
+                      placeholder="Leave empty for strategy default, or QQQ, SPY, AAPL"
+                    />
+                  </div>
+                  <div class="form-group form-group-sm">
+                    <label>Notify on</label>
+                    <div class="checkbox-row">
+                      <label class="check-label">
+                        <input type="checkbox" id="alert-notify-entry" checked /> Entry
+                      </label>
+                      <label class="check-label">
+                        <input type="checkbox" id="alert-notify-exit" checked /> Exit
+                      </label>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="alert-price-fields" class="alert-type-fields hidden">
+                  <div class="form-group">
+                    <label for="alert-ticker">Tickers</label>
+                    <input
+                      type="text"
+                      id="alert-ticker"
+                      placeholder="QQQ, SPY, AAPL"
+                    />
+                  </div>
+                  <div class="form-group form-group-sm">
+                    <label for="alert-condition">Condition</label>
+                    <select id="alert-condition">
+                      <option value="above">Price above</option>
+                      <option value="below">Price below</option>
+                    </select>
+                  </div>
+                  <div class="form-group form-group-sm">
+                    <label for="alert-price">Price</label>
+                    <input type="number" id="alert-price" step="0.01" placeholder="700" />
+                  </div>
+                  <div class="form-group form-group-sm">
+                    <label for="alert-interval">Interval</label>
+                    <select id="alert-interval">
+                      <option value="1m">1m</option>
+                      <option value="5m">5m</option>
+                      <option value="15m" selected>15m</option>
+                      <option value="1h">1h</option>
+                      <option value="1d">1d</option>
+                    </select>
+                  </div>
+                  <div class="form-group form-group-sm">
+                    <label class="check-label" style="margin-top: 28px;">
+                      <input type="checkbox" id="alert-once" checked /> Disable after trigger
+                    </label>
+                  </div>
+                </div>
+
+                <div class="form-actions-bar">
+                  <button type="submit" class="btn btn-primary btn-lg">
+                    <i data-lucide="bell-plus"></i>
+                    <span>Add Alert</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+
+            <!-- Alerts list -->
+            <div class="card full-width">
+              <div class="card-header justify-between">
+                <div class="flex-align">
+                  <i data-lucide="list"></i>
+                  <h3>Your Alerts</h3>
+                </div>
+              </div>
+              <div id="alerts-list" class="alerts-list">
+                <div class="loading-state"><p>No alerts yet.</p></div>
+              </div>
+            </div>
+
+            <!-- Logs -->
+            <div class="card full-width">
+              <div class="card-header justify-between">
+                <div class="flex-align">
+                  <i data-lucide="terminal"></i>
+                  <h3>Monitor Log</h3>
+                </div>
+              </div>
+              <pre id="alerts-log-view" class="live-log-view">Waiting for monitor activity…</pre>
+            </div>
+          </div>
+        </section>
+
         <!-- Tab Content: Strategies List -->
         <section id="tab-strategies" class="tab-pane">
           <div class="strategies-list-container" id="strategies-cards-grid">
@@ -576,6 +792,7 @@
     </div>
 
     <!-- Script imports (cache-bust when override/comparison UI changes) -->
-    <script src="app.js?v=20260720g"></script>
+    <script src="app.js?v=20260722b"></script>
+    <script src="alerts_panel.js?v=20260722b"></script>
   </body>
 </html>
