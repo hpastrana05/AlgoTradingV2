@@ -447,8 +447,8 @@ function renderTradeLog(tradePairs) {
         const returnPct = tp.return_pct;
         const isLong = (tp.side || 'LONG') === 'LONG';
         const sideBadge = isLong
-            ? '<span class="badge-side-buy">BUY</span>'
-            : '<span class="badge-side-sell">SELL</span>';
+            ? '<span class="badge-side-buy">LONG</span>'
+            : '<span class="badge-side-sell">SHORT</span>';
         const exitType = tp.exit_type || '';
         let exitBadge;
         if (exitType.startsWith('FORCE_') || exitType.startsWith('EOD_')) {

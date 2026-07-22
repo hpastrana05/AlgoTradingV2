@@ -109,7 +109,22 @@ class StrategyManager:
             if self.strategy.check_entry(self.data_manager.data, self.position):
                 LOGGER.info(f"Entry signal triggered for: {self.name}")
                 bar = self.data_manager.data.iloc[-1]
-                entry_action = self.position.intended_action or self.position.action
+                # Prefer direction set by the entry signal (long vs short).
+                # Do not silently fall back to the JSON default "action" when the
+                # signal already chose a side — that default is only for
+                # single-direction strategies that never set intended_action.
+                entry_action = self.position.intended_action
+                if not entry_action:
+                    entry_action = self.position.action
+                    LOGGER.warning(
+                        f"{self.name}: entry without intended_action; "
+                        f"using strategy default action={entry_action}"
+                    )
+                if entry_action not in ("BUY", "SELL"):
+                    LOGGER.error(
+                        f"{self.name}: invalid entry_action={entry_action!r}; skipping"
+                    )
+                    return broker_ticker, "HOLD", current_price, None
                 if not defer_position_open:
                     self.position.open(
                         entry_price=current_price,
