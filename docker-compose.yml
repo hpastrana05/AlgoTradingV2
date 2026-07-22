@@ -10,20 +10,24 @@ services:
       # Host:Container — open http://<pi-ip>:8000
       - "8000:8000"
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       TZ: Europe/Madrid
+      PYTHONPATH: /app
       # Optional overrides (compose wins over .env if set here)
       # API_KEY_DEMO: ""
       # API_SECRET_DEMO: ""
       # API_KEY_LIVE: ""
       # API_SECRET_LIVE: ""
+      # TELEGRAM_BOT_TOKEN: ""
+      # TELEGRAM_CHAT_ID: ""
     volumes:
-      # Edit strategies on the Pi without rebuilding the image
+      # Edit strategies on the host without rebuilding the image
       - ./strategies:/app/strategies
       - ./logs:/app/logs
-      # Credentials — keep .env on the host, never bake secrets into the image
-      - ./.env:/app/.env:ro
+      # Telegram alerts + saved alert definitions (persisted on host)
+      - ./alerts:/app/alerts
     # Uncomment on 64-bit Raspberry Pi OS if you build elsewhere and pull:
     # platform: linux/arm64
     healthcheck:
@@ -31,4 +35,4 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 45s
+      start_period: 60s

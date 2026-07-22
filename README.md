@@ -34,16 +34,17 @@ For running the UI
 
 ## Docker (Raspberry Pi / server)
 
-Requires **64-bit** Raspberry Pi OS (Pi 4/5 recommended). First build on the Pi can take 10–30+ minutes.
+Requires **64-bit** OS (Pi 4/5 or x86_64 server recommended). First build can take 10–30+ minutes on a Pi.
 
 ```bash
-# On the Pi
+# On the Pi / server
 sudo apt update && sudo apt install -y git docker.io docker-compose-v2
 sudo usermod -aG docker $USER   # then log out/in
 
 git clone <your-repo-url> AlgoTradingV2
 cd AlgoTradingV2
-cp .env.example .env            # add Trading212 API keys
+cp .env.example .env            # add Trading212 / Telegram keys
+mkdir -p logs alerts
 docker compose up -d --build
 ```
 
@@ -53,9 +54,18 @@ Open `http://<pi-ip>:8000`. Useful commands:
 docker compose logs -f
 docker compose restart
 docker compose down
+docker compose up -d --build    # rebuild after code/dependency changes
 ```
 
-Strategies are bind-mounted from `./strategies` (edit on the host without rebuilding).
+Bind mounts (edit on the host without rebuilding):
+
+| Host path | Container | Purpose |
+|-----------|-----------|---------|
+| `./strategies` | `/app/strategies` | Strategy JSON files |
+| `./logs` | `/app/logs` | App logs |
+| `./alerts` | `/app/alerts` | Telegram config + alert definitions |
+
+Credentials come from `.env` via Compose `env_file` (not baked into the image).
 
 ## Strategies
 
