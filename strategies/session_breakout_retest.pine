@@ -9,9 +9,9 @@ strategy(
      default_qty_type = strategy.percent_of_equity,
      default_qty_value = 100,
      commission_type = strategy.commission.percent,
-     commission_value = 0.1,
+     commission_value = 0.0,
      pyramiding = 0,
-     calc_on_every_tick = false,
+     calc_on_every_tick = true,
      process_orders_on_close = false,
      close_entries_rule = "ANY"
  )
@@ -22,8 +22,8 @@ string TZ = "Europe/Madrid"
 i_sessionH = input.int(15, "Anchor hour", minval = 0, maxval = 23, group = "Session")
 i_sessionM = input.int(30, "Anchor minute", minval = 0, maxval = 59, group = "Session")
 
-i_boH = input.int(16, "Breakout deadline hour", minval = 0, maxval = 23, group = "Deadlines")
-i_boM = input.int(30, "Breakout deadline minute", minval = 0, maxval = 59, group = "Deadlines")
+i_boH = input.int(17, "Breakout deadline hour", minval = 0, maxval = 23, group = "Deadlines")
+i_boM = input.int(00, "Breakout deadline minute", minval = 0, maxval = 59, group = "Deadlines")
 i_rtH = input.int(23, "Retest deadline hour (entry day)", minval = 0, maxval = 23, group = "Deadlines")
 i_rtM = input.int(0, "Retest deadline minute", minval = 0, maxval = 59, group = "Deadlines")
 
@@ -36,6 +36,7 @@ i_sameDayFlatM = input.int(0, "Same-day flatten minute", group = "Flatten")
 i_boBufPct = input.float(0.0, "Breakout buffer % of range", minval = 0.0, step = 0.1, group = "Filters")
 i_rtTolPct = input.float(0.0, "Retest touch tolerance % of range", minval = 0.0, step = 0.1, group = "Filters")
 
+// Configurado a R:R 1:1.5 por defecto
 i_winU = input.float(2.0, "TP win units (R)", minval = 0.1, step = 0.1, group = "Risk")
 i_lossU = input.float(1.0, "SL loss units (R)", minval = 0.1, step = 0.1, group = "Risk")
 
@@ -132,39 +133,41 @@ bool shortRetest = false
 
 if afterAnchor and not sessTraded and not sessAbandoned and strategy.position_size == 0 and not na(boSide) and bar_index > boBar and boExt
     if boSide == "BUY" and i_longOk
-        longRetest := open > sessHigh and high > sessHigh and low <= sessHigh + tol and close > sessHigh and low >= sessMid
+        // Entrada al tocar el nivel
+        longRetest := low <= sessHigh + tol and high >= sessHigh
     if boSide == "SELL" and i_shortOk
-        shortRetest := open < sessLow and low < sessLow and high >= sessLow - tol and close < sessLow and high <= sessMid
+        // Entrada al tocar el nivel
+        shortRetest := high >= sessLow - tol and low <= sessLow
 
 if longRetest
-    float riskL = close - sessMid
-    if riskL > 0
-        entryPx := close
-        slPx := sessMid
-        tpPx := close + (i_winU / i_lossU) * riskL
-        entryDay := today
-        tradeSide := "LONG"
-        sessTraded := true
-        boSide := na
-        boBar := na
-        boExt := false
-        strategy.entry("Long", strategy.long, comment = "Retest Long")
+    entryPx := sessHigh
+    slPx := sessLow
+    float risk = entryPx - slPx
+    tpPx := entryPx + (risk * (i_winU / i_lossU))
+    
+    entryDay := today
+    tradeSide := "LONG"
+    sessTraded := true
+    boSide := na
+    boBar := na
+    boExt := false
+    strategy.entry("Long", strategy.long, comment = "Retest Long")
 
 if shortRetest
-    float riskS = sessMid - close
-    if riskS > 0
-        entryPx := close
-        slPx := sessMid
-        tpPx := close - (i_winU / i_lossU) * riskS
-        entryDay := today
-        tradeSide := "SHORT"
-        sessTraded := true
-        boSide := na
-        boBar := na
-        boExt := false
-        strategy.entry("Short", strategy.short, comment = "Retest Short")
+    entryPx := sessLow
+    slPx := sessHigh
+    float risk = slPx - entryPx
+    tpPx := entryPx - (risk * (i_winU / i_lossU))
+    
+    entryDay := today
+    tradeSide := "SHORT"
+    sessTraded := true
+    boSide := na
+    boBar := na
+    boExt := false
+    strategy.entry("Short", strategy.short, comment = "Retest Short")
 
-// ─── Exits: SL / TP / Flatten (run every bar while in a trade) ─────────────────
+// ─── Exits Execution ──────────────────────────────────────────────────────────
 bool flatSignal = false
 bool hitSL = false
 bool hitTP = false
@@ -176,7 +179,6 @@ if strategy.position_size != 0 and not na(slPx) and not na(tpPx)
         else
             flatSignal := today == entryDay and f_atOrAfter(i_sameDayFlatH, i_sameDayFlatM)
 
-    // Detect SL/TP for markers (High/Low of the bar)
     if strategy.position_size > 0
         hitSL := low <= slPx
         hitTP := (not hitSL) and high >= tpPx
@@ -185,7 +187,6 @@ if strategy.position_size != 0 and not na(slPx) and not na(tpPx)
         hitTP := (not hitSL) and low <= tpPx
 
     if flatSignal
-        // Cancel bracket and flatten before next session
         strategy.cancel("L-Exit")
         strategy.cancel("S-Exit")
         if strategy.position_size > 0
@@ -193,7 +194,6 @@ if strategy.position_size != 0 and not na(slPx) and not na(tpPx)
         else
             strategy.close("Short", comment = "Flatten")
     else
-        // Active SL + TP for the Strategy Tester
         if strategy.position_size > 0
             strategy.exit("L-Exit", from_entry = "Long", stop = slPx, limit = tpPx, comment_loss = "SL", comment_profit = "TP")
         else if strategy.position_size < 0
@@ -218,6 +218,6 @@ plot(strategy.position_size != 0 ? tpPx : na, "TP", color = color.lime, style = 
 bgcolor(f_isAnchor() ? color.new(color.blue, 85) : na, title = "Anchor bar")
 plotshape(longRetest, title = "Long entry", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.small, text = "L")
 plotshape(shortRetest, title = "Short entry", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small, text = "S")
-plotshape(hitSL and strategy.position_size[1] != 0, title = "SL exit", style = shape.xcross, location = location.absolute, color = color.red, size = size.tiny)
-plotshape(hitTP and strategy.position_size[1] != 0, title = "TP exit", style = shape.xcross, location = location.absolute, color = color.lime, size = size.tiny)
-plotshape(flatSignal and strategy.position_size[1] != 0, title = "Flatten", style = shape.xcross, location = location.absolute, color = color.orange, size = size.tiny)
+plotshape(hitSL and strategy.position_size[1] != 0 ? slPx : na, title = "SL exit", style = shape.xcross, location = location.absolute, color = color.red, size = size.tiny)
+plotshape(hitTP and strategy.position_size[1] != 0 ? tpPx : na, title = "TP exit", style = shape.xcross, location = location.absolute, color = color.lime, size = size.tiny)
+plotshape(flatSignal and strategy.position_size[1] != 0 ? close : na, title = "Flatten", style = shape.xcross, location = location.absolute, color = color.orange, size = size.tiny)

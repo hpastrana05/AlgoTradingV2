@@ -571,17 +571,24 @@ def _update_breakout_extension(data, position):
 
 
 def _prepare_anchor_trade(position, side, entry, win_units, loss_units):
-    """SL at anchor mid, TP by risk-reward ratio."""
-    sl = position.session_mid
-    if sl is None:
-        return False
-
+    """
+    SL at the opposite extreme of the anchor candle (full range risk):
+      BUY  → SL at session_low
+      SELL → SL at session_high
+    TP sized by win_units:loss_units from that risk.
+    """
     if side == "BUY":
+        sl = position.session_low
+        if sl is None:
+            return False
         risk = entry - sl
         if risk <= 0:
             return False
         tp = entry + (win_units / loss_units) * risk
     elif side == "SELL":
+        sl = position.session_high
+        if sl is None:
+            return False
         risk = sl - entry
         if risk <= 0:
             return False
@@ -597,19 +604,19 @@ def _prepare_anchor_trade(position, side, entry, win_units, loss_units):
     return True
 
 
-def _long_retest_ok(bar, level, mid, rng, retest_tolerance_pct):
+def _long_retest_ok(bar, level, sl_level, rng, retest_tolerance_pct):
     """
     Chart-style long retest: pullback from above that wicks the broken high
-    and closes back above it, without stabbing through the mid stop.
+    and closes back above it, without stabbing through the SL (anchor low).
     """
     open_px = float(bar["Open"])
     high = float(bar["High"])
     low = float(bar["Low"])
     close = float(bar["Close"])
 
-    if mid is None or rng is None or rng <= 0:
+    if sl_level is None or rng is None or rng <= 0:
         return False
-    if low < mid:
+    if low < sl_level:
         return False
     # Must approach from above the broken level
     if open_px <= level:
@@ -624,16 +631,17 @@ def _long_retest_ok(bar, level, mid, rng, retest_tolerance_pct):
     return touched and held
 
 
-def _short_retest_ok(bar, level, mid, rng, retest_tolerance_pct):
-    """Chart-style short retest: pullback from below that wicks the broken low."""
+def _short_retest_ok(bar, level, sl_level, rng, retest_tolerance_pct):
+    """Chart-style short retest: pullback from below that wicks the broken low,
+    without stabbing through the SL (anchor high)."""
     open_px = float(bar["Open"])
     high = float(bar["High"])
     low = float(bar["Low"])
     close = float(bar["Close"])
 
-    if mid is None or rng is None or rng <= 0:
+    if sl_level is None or rng is None or rng <= 0:
         return False
-    if high > mid:
+    if high > sl_level:
         return False
     if open_px >= level:
         return False
@@ -672,9 +680,9 @@ def session_retest_long(
     3) Retest: pullback from above that wicks the broken high and closes back
        above it (allowed until retest_deadline, default 23:00 Madrid).
     4) Invalidation: close back at/below the high clears the breakout.
-    5) Retest must not stab through the anchor midpoint (SL).
+    5) Retest must not stab through the opposite extreme (SL = anchor low).
 
-    SL at mid, TP by win_units:loss_units.
+    SL at anchor low (full candle range), TP by win_units:loss_units.
     """
     if position.is_open:
         return False
@@ -730,9 +738,9 @@ def session_retest_long(
 
     bar = data.iloc[-1]
     level = position.session_high
-    mid = position.session_mid
+    sl_level = position.session_low
     rng = _anchor_range(position)
-    if not _long_retest_ok(bar, level, mid, rng, retest_tolerance_pct):
+    if not _long_retest_ok(bar, level, sl_level, rng, retest_tolerance_pct):
         return False
 
     return _prepare_anchor_trade(position, "BUY", float(bar["Close"]), win_units, loss_units)
@@ -764,9 +772,9 @@ def session_retest_short(
     3) Retest: pullback from below that wicks the broken low and closes back
        below it (allowed until retest_deadline, default 23:00 Madrid).
     4) Invalidation: close back at/above the low clears the breakout.
-    5) Retest must not stab through the anchor midpoint (SL).
+    5) Retest must not stab through the opposite extreme (SL = anchor high).
 
-    SL at mid, TP by win_units:loss_units.
+    SL at anchor high (full candle range), TP by win_units:loss_units.
     """
     if position.is_open:
         return False
@@ -821,9 +829,9 @@ def session_retest_short(
 
     bar = data.iloc[-1]
     level = position.session_low
-    mid = position.session_mid
+    sl_level = position.session_high
     rng = _anchor_range(position)
-    if not _short_retest_ok(bar, level, mid, rng, retest_tolerance_pct):
+    if not _short_retest_ok(bar, level, sl_level, rng, retest_tolerance_pct):
         return False
 
     return _prepare_anchor_trade(position, "SELL", float(bar["Close"]), win_units, loss_units)
@@ -852,7 +860,17 @@ def _arm_exit(position, data, level, reason, is_stop):
 
 
 def sl_session_mid(data, position, *_, **__):
-    """Stop loss at the anchor range midpoint (set on entry)."""
+    """Stop loss at the level stored on entry (legacy name; uses stop_loss_price)."""
+    return sl_session_extreme(data, position)
+
+
+def sl_session_extreme(data, position, *_, **__):
+    """
+    Stop loss at the opposite extreme of the session/anchor candle:
+      long  → session low
+      short → session high
+    Level is set on entry in stop_loss_price.
+    """
     if position is None or not position.is_open or position.stop_loss_price is None:
         return False
 

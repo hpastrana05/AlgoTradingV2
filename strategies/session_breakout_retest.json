@@ -45,7 +45,7 @@
                 "flatten_minute": 0
             },
             {
-                "type": "sl_session_mid"
+                "type": "sl_session_extreme"
             },
             {
                 "type": "tp_session_ratio"
