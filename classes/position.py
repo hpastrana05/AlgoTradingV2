@@ -11,6 +11,7 @@ class Position:
 
         # Active trade
         self.entry_price = None
+        self.entry_time = None  # bar timestamp when the trade opened
         self.entry_candle_low = None
         self.entry_candle_high = None
         self.stop_loss_price = None
@@ -35,8 +36,10 @@ class Position:
         self.breakout_side = None  # "BUY" (break above) or "SELL" (break below)
         self.breakout_level = None
         self.breakout_bar_ts = None  # bar that confirmed breakout (retest must be later)
+        # True once price has traded fully beyond the broken level (extension before retest)
+        self.breakout_extended = False
         self.session_traded = False  # one entry per anchor session day
-        self.session_abandoned = False  # deadline passed with no entry
+        self.session_abandoned = False  # breakout/retest window closed with no entry
 
     def reset_trade_levels(self):
         self.stop_loss_price = None
@@ -45,13 +48,14 @@ class Position:
         self.exit_fill_price = None
         self.exit_reason = None
 
-    def open(self, entry_price, candle_low, candle_high, action=None):
+    def open(self, entry_price, candle_low, candle_high, action=None, entry_time=None):
         if action:
             self.action = action
         elif self.intended_action:
             self.action = self.intended_action
 
         self.entry_price = entry_price
+        self.entry_time = entry_time
         self.entry_candle_low = candle_low
         self.entry_candle_high = candle_high
         self.intended_action = None
@@ -60,13 +64,15 @@ class Position:
 
     def close(self):
         self.entry_price = None
+        self.entry_time = None
         self.entry_candle_low = None
         self.entry_candle_high = None
         self.reset_trade_levels()
-        # After a trade, allow a new breakout/retest setup the same day
+        # After a trade, clear breakout so a new setup can form the same day
         self.breakout_side = None
         self.breakout_level = None
         self.breakout_bar_ts = None
+        self.breakout_extended = False
 
     @property
     def is_open(self):

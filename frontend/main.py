@@ -31,7 +31,7 @@ app = FastAPI(title="AlgoTrading V2 Control Center")
 STRATEGIES_DIR = os.path.join(parent_dir, "strategies")
 
 # Not exposed in the strategy builder UI (handled internally by the engine).
-HIDDEN_SIGNAL_PARAMS = {"session_tz"}
+HIDDEN_SIGNAL_PARAMS = {"session_tz", "entry_deadline_hour", "entry_deadline_minute"}
 
 
 def _sanitize_rule(rule: dict) -> dict:
@@ -106,8 +106,12 @@ def get_signal_metadata() -> List[Dict[str, Any]]:
                     description = "Reward units in the ratio (e.g. 3 for 1:3 risk-reward)"
                 elif param_name in ("session_hour", "session_minute"):
                     description = f"Anchor candle time ({param_name}), Europe/Madrid"
+                elif param_name in ("breakout_deadline_hour", "breakout_deadline_minute"):
+                    description = f"Latest time a breakout may print ({param_name}), Europe/Madrid"
+                elif param_name in ("retest_deadline_hour", "retest_deadline_minute"):
+                    description = f"Latest time a retest entry may print ({param_name}), Europe/Madrid"
                 elif param_name in ("entry_deadline_hour", "entry_deadline_minute"):
-                    description = f"Last entry time ({param_name}), Europe/Madrid"
+                    description = f"Legacy alias for breakout deadline ({param_name}), Europe/Madrid"
                 elif param_name in (
                     "fast", "slow", "ema_value", "sma_value", "ma_value",
                     "ema1", "ema2", "rsi_value", "lower", "upper",
@@ -118,7 +122,11 @@ def get_signal_metadata() -> List[Dict[str, Any]]:
                 elif param_name == "retest_tolerance_pct":
                     description = "% of the anchor candle range allowed when retesting the broken level"
                 elif param_name in ("flatten_hour", "flatten_minute"):
-                    description = f"Same-day flatten time ({param_name}), Europe/Madrid"
+                    description = (
+                        f"Flatten clock ({param_name}), Europe/Madrid — "
+                        "same-day for flatten_session_eod, next-day for "
+                        "flatten_before_next_session (e.g. 14:00 before 15:30)"
+                    )
                 
                 params.append({
                     "name": param_name,
@@ -150,7 +158,7 @@ class BacktestRequest(BaseModel):
     strategy_file: str
     capital: float = Field(default=10000.0, ge=1.0)
     commission: float = Field(default=0.001, ge=0.0, le=1.0)
-    risk_pct: float = Field(default=1.0, ge=0.01, le=100.0)
+    risk_pct: float = Field(default=100.0, ge=0.01, le=100.0)
     period: Optional[str] = None
     ticker: Optional[str] = None
     interval: Optional[str] = None

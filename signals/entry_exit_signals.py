@@ -377,17 +377,51 @@ def _local_bar_minutes(index):
     return ts.hour * 60 + ts.minute
 
 
-def _check_entry_deadline(
-    data,
-    position,
-    entry_deadline_hour=16,
-    entry_deadline_minute=15,
+def _past_deadline(data, hour, minute):
+    """True once the current Madrid bar is strictly after hour:minute."""
+    return _local_bar_minutes(data.index) > hour * 60 + minute
+
+
+def _resolve_session_deadlines(
+    breakout_deadline_hour,
+    breakout_deadline_minute,
+    retest_deadline_hour,
+    retest_deadline_minute,
+    entry_deadline_hour=None,
+    entry_deadline_minute=None,
 ):
     """
-    Abandon the setup for the day once the deadline bar has passed without entry.
+    Breakout window vs retest window (Europe/Madrid).
 
-    With 15m bars and deadline 16:15, entries are still allowed on the 16:00 and
-    16:15 candles; from the 16:30 bar onward no new entries are taken.
+    Legacy entry_deadline_* maps to the breakout deadline.
+    """
+    if entry_deadline_hour is not None:
+        breakout_deadline_hour = entry_deadline_hour
+    if entry_deadline_minute is not None:
+        breakout_deadline_minute = entry_deadline_minute
+    return (
+        breakout_deadline_hour,
+        breakout_deadline_minute,
+        retest_deadline_hour,
+        retest_deadline_minute,
+    )
+
+
+def _check_session_windows(
+    data,
+    position,
+    breakout_deadline_hour,
+    breakout_deadline_minute,
+    retest_deadline_hour,
+    retest_deadline_minute,
+):
+    """
+    Abandon the day when:
+    - retest deadline has passed with no entry, or
+    - breakout deadline has passed and there is still no active breakout.
+
+    If a breakout is already marked, retest may continue until the retest deadline.
+    Returns True when the setup is abandoned (caller should not enter).
     """
     if position.session_traded or position.session_abandoned:
         return position.session_abandoned
@@ -395,11 +429,18 @@ def _check_entry_deadline(
     if position.session_high is None:
         return False
 
-    deadline = entry_deadline_hour * 60 + entry_deadline_minute
-    if _local_bar_minutes(data.index) > deadline:
+    if _past_deadline(data, retest_deadline_hour, retest_deadline_minute):
         position.session_abandoned = True
+        return True
 
-    return position.session_abandoned
+    if (
+        _past_deadline(data, breakout_deadline_hour, breakout_deadline_minute)
+        and position.breakout_side is None
+    ):
+        position.session_abandoned = True
+        return True
+
+    return False
 
 
 def _update_anchor_levels(
@@ -448,6 +489,13 @@ def _anchor_range(position):
     return position.session_high - position.session_low
 
 
+def _clear_breakout_state(position):
+    position.breakout_side = None
+    position.breakout_level = None
+    position.breakout_bar_ts = None
+    position.breakout_extended = False
+
+
 def _update_anchor_breakout(data, position, breakout_buffer_pct=0, side=None):
     """Mark breakout direction after a clear close beyond the anchor range."""
     if position.is_open or position.session_high is None:
@@ -468,10 +516,12 @@ def _update_anchor_breakout(data, position, breakout_buffer_pct=0, side=None):
         position.breakout_side = "BUY"
         position.breakout_level = position.session_high
         position.breakout_bar_ts = current_ts
+        position.breakout_extended = False
     elif close < position.session_low - buffer and side in (None, "SELL"):
         position.breakout_side = "SELL"
         position.breakout_level = position.session_low
         position.breakout_bar_ts = current_ts
+        position.breakout_extended = False
 
 
 def _invalidate_failed_breakout(data, position):
@@ -491,13 +541,33 @@ def _invalidate_failed_breakout(data, position):
 
     close = float(data["Close"].iloc[-1])
     if position.breakout_side == "BUY" and close <= position.session_high:
-        position.breakout_side = None
-        position.breakout_level = None
-        position.breakout_bar_ts = None
+        _clear_breakout_state(position)
     elif position.breakout_side == "SELL" and close >= position.session_low:
-        position.breakout_side = None
-        position.breakout_level = None
-        position.breakout_bar_ts = None
+        _clear_breakout_state(position)
+
+
+def _update_breakout_extension(data, position):
+    """
+    Mark that price has held beyond the broken level after the breakout bar.
+
+    Extension = at least one later bar that still closes beyond the level
+    (acceptance outside the range). A retest wick on that same bar is allowed —
+    e.g. short breakout, next bar wicks back up to the broken low and closes below.
+    """
+    if position.breakout_side is None or position.breakout_extended:
+        return
+    if position.breakout_bar_ts is None:
+        return
+
+    current_ts = data.index[-1]
+    if current_ts <= position.breakout_bar_ts:
+        return
+
+    close = float(data["Close"].iloc[-1])
+    if position.breakout_side == "BUY" and close > position.session_high:
+        position.breakout_extended = True
+    elif position.breakout_side == "SELL" and close < position.session_low:
+        position.breakout_extended = True
 
 
 def _prepare_anchor_trade(position, side, entry, win_units, loss_units):
@@ -522,11 +592,58 @@ def _prepare_anchor_trade(position, side, entry, win_units, loss_units):
     position.intended_action = side
     position.stop_loss_price = sl
     position.take_profit_price = tp
-    position.breakout_side = None
-    position.breakout_level = None
-    position.breakout_bar_ts = None
+    _clear_breakout_state(position)
     position.session_traded = True
     return True
+
+
+def _long_retest_ok(bar, level, mid, rng, retest_tolerance_pct):
+    """
+    Chart-style long retest: pullback from above that wicks the broken high
+    and closes back above it, without stabbing through the mid stop.
+    """
+    open_px = float(bar["Open"])
+    high = float(bar["High"])
+    low = float(bar["Low"])
+    close = float(bar["Close"])
+
+    if mid is None or rng is None or rng <= 0:
+        return False
+    if low < mid:
+        return False
+    # Must approach from above the broken level
+    if open_px <= level:
+        return False
+    # Still trading above during the bar (not a close-only spike)
+    if high <= level:
+        return False
+
+    tolerance = rng * (retest_tolerance_pct / 100.0)
+    touched = low <= level + tolerance
+    held = close > level
+    return touched and held
+
+
+def _short_retest_ok(bar, level, mid, rng, retest_tolerance_pct):
+    """Chart-style short retest: pullback from below that wicks the broken low."""
+    open_px = float(bar["Open"])
+    high = float(bar["High"])
+    low = float(bar["Low"])
+    close = float(bar["Close"])
+
+    if mid is None or rng is None or rng <= 0:
+        return False
+    if high > mid:
+        return False
+    if open_px >= level:
+        return False
+    if low >= level:
+        return False
+
+    tolerance = rng * (retest_tolerance_pct / 100.0)
+    touched = high >= level - tolerance
+    held = close < level
+    return touched and held
 
 
 def session_retest_long(
@@ -534,8 +651,12 @@ def session_retest_long(
     position,
     session_hour=15,
     session_minute=30,
-    entry_deadline_hour=16,
-    entry_deadline_minute=15,
+    breakout_deadline_hour=16,
+    breakout_deadline_minute=15,
+    retest_deadline_hour=23,
+    retest_deadline_minute=0,
+    entry_deadline_hour=None,
+    entry_deadline_minute=None,
     breakout_buffer_pct=0,
     retest_tolerance_pct=0,
     win_units=2,
@@ -544,18 +665,33 @@ def session_retest_long(
     **__,
 ):
     """
-    Long after breakout above the anchor candle high:
-    1) A candle must close clearly above the anchor high (breakout).
-    2) Later, price retests that high and closes back above it.
-    3) If price closes back at/below the high before entry, the breakout is
-       invalidated and a fresh breakout is required.
-    4) The retest candle must not trade below the anchor midpoint (SL).
+    Long breakout + retest of the Madrid-session anchor candle (see chart pattern):
 
-    SL: midpoint of the anchor range. TP: win_units:loss_units (default 1:2).
-    All clock times are Europe/Madrid. Abandons after entry_deadline.
+    1) Breakout: candle closes above the anchor high (before breakout_deadline).
+    2) Extension: later a full candle trades entirely above that high.
+    3) Retest: pullback from above that wicks the broken high and closes back
+       above it (allowed until retest_deadline, default 23:00 Madrid).
+    4) Invalidation: close back at/below the high clears the breakout.
+    5) Retest must not stab through the anchor midpoint (SL).
+
+    SL at mid, TP by win_units:loss_units.
     """
     if position.is_open:
         return False
+
+    (
+        breakout_deadline_hour,
+        breakout_deadline_minute,
+        retest_deadline_hour,
+        retest_deadline_minute,
+    ) = _resolve_session_deadlines(
+        breakout_deadline_hour,
+        breakout_deadline_minute,
+        retest_deadline_hour,
+        retest_deadline_minute,
+        entry_deadline_hour,
+        entry_deadline_minute,
+    )
 
     _sync_session_day(position, data)
 
@@ -565,11 +701,21 @@ def session_retest_long(
     if not _update_anchor_levels(data, position, session_hour, session_minute):
         return False
 
-    if _check_entry_deadline(data, position, entry_deadline_hour, entry_deadline_minute):
+    _invalidate_failed_breakout(data, position)
+
+    if _check_session_windows(
+        data,
+        position,
+        breakout_deadline_hour,
+        breakout_deadline_minute,
+        retest_deadline_hour,
+        retest_deadline_minute,
+    ):
         return False
 
-    _invalidate_failed_breakout(data, position)
-    _update_anchor_breakout(data, position, breakout_buffer_pct, side="BUY")
+    # New breakouts only inside the breakout window
+    if not _past_deadline(data, breakout_deadline_hour, breakout_deadline_minute):
+        _update_anchor_breakout(data, position, breakout_buffer_pct, side="BUY")
 
     if position.breakout_side != "BUY":
         return False
@@ -578,27 +724,18 @@ def session_retest_long(
     if position.breakout_bar_ts is not None and current_ts <= position.breakout_bar_ts:
         return False
 
+    _update_breakout_extension(data, position)
+    if not position.breakout_extended:
+        return False
+
     bar = data.iloc[-1]
-    close = float(bar["Close"])
-    low = float(bar["Low"])
     level = position.session_high
     mid = position.session_mid
     rng = _anchor_range(position)
-    if rng is None or mid is None:
+    if not _long_retest_ok(bar, level, mid, rng, retest_tolerance_pct):
         return False
 
-    # Retest that already stabbed through the mid stop is not a valid entry.
-    if low < mid:
-        return False
-
-    tolerance = rng * (retest_tolerance_pct / 100.0)
-    retest_touch = low <= level + tolerance
-    retest_confirm = close > level
-
-    if not (retest_touch and retest_confirm):
-        return False
-
-    return _prepare_anchor_trade(position, "BUY", close, win_units, loss_units)
+    return _prepare_anchor_trade(position, "BUY", float(bar["Close"]), win_units, loss_units)
 
 
 def session_retest_short(
@@ -606,8 +743,12 @@ def session_retest_short(
     position,
     session_hour=15,
     session_minute=30,
-    entry_deadline_hour=16,
-    entry_deadline_minute=15,
+    breakout_deadline_hour=16,
+    breakout_deadline_minute=15,
+    retest_deadline_hour=23,
+    retest_deadline_minute=0,
+    entry_deadline_hour=None,
+    entry_deadline_minute=None,
     breakout_buffer_pct=0,
     retest_tolerance_pct=0,
     win_units=2,
@@ -616,18 +757,33 @@ def session_retest_short(
     **__,
 ):
     """
-    Short after breakout below the anchor candle low:
-    1) A candle must close clearly below the anchor low (breakout).
-    2) Later, price retests that low and closes back below it.
-    3) If price closes back at/above the low before entry, the breakout is
-       invalidated and a fresh breakout is required.
-    4) The retest candle must not trade above the anchor midpoint (SL).
+    Short breakout + retest of the Madrid-session anchor candle (mirror of long):
 
-    SL: midpoint of the anchor range. TP: win_units:loss_units (default 1:2).
-    All clock times are Europe/Madrid. Abandons after entry_deadline.
+    1) Breakout: candle closes below the anchor low (before breakout_deadline).
+    2) Extension: later a full candle trades entirely below that low.
+    3) Retest: pullback from below that wicks the broken low and closes back
+       below it (allowed until retest_deadline, default 23:00 Madrid).
+    4) Invalidation: close back at/above the low clears the breakout.
+    5) Retest must not stab through the anchor midpoint (SL).
+
+    SL at mid, TP by win_units:loss_units.
     """
     if position.is_open:
         return False
+
+    (
+        breakout_deadline_hour,
+        breakout_deadline_minute,
+        retest_deadline_hour,
+        retest_deadline_minute,
+    ) = _resolve_session_deadlines(
+        breakout_deadline_hour,
+        breakout_deadline_minute,
+        retest_deadline_hour,
+        retest_deadline_minute,
+        entry_deadline_hour,
+        entry_deadline_minute,
+    )
 
     _sync_session_day(position, data)
 
@@ -637,11 +793,20 @@ def session_retest_short(
     if not _update_anchor_levels(data, position, session_hour, session_minute):
         return False
 
-    if _check_entry_deadline(data, position, entry_deadline_hour, entry_deadline_minute):
+    _invalidate_failed_breakout(data, position)
+
+    if _check_session_windows(
+        data,
+        position,
+        breakout_deadline_hour,
+        breakout_deadline_minute,
+        retest_deadline_hour,
+        retest_deadline_minute,
+    ):
         return False
 
-    _invalidate_failed_breakout(data, position)
-    _update_anchor_breakout(data, position, breakout_buffer_pct, side="SELL")
+    if not _past_deadline(data, breakout_deadline_hour, breakout_deadline_minute):
+        _update_anchor_breakout(data, position, breakout_buffer_pct, side="SELL")
 
     if position.breakout_side != "SELL":
         return False
@@ -650,27 +815,18 @@ def session_retest_short(
     if position.breakout_bar_ts is not None and current_ts <= position.breakout_bar_ts:
         return False
 
+    _update_breakout_extension(data, position)
+    if not position.breakout_extended:
+        return False
+
     bar = data.iloc[-1]
-    close = float(bar["Close"])
-    high = float(bar["High"])
     level = position.session_low
     mid = position.session_mid
     rng = _anchor_range(position)
-    if rng is None or mid is None:
+    if not _short_retest_ok(bar, level, mid, rng, retest_tolerance_pct):
         return False
 
-    # Retest that already stabbed through the mid stop is not a valid entry.
-    if high > mid:
-        return False
-
-    tolerance = rng * (retest_tolerance_pct / 100.0)
-    retest_touch = high >= level - tolerance
-    retest_confirm = close < level
-
-    if not (retest_touch and retest_confirm):
-        return False
-
-    return _prepare_anchor_trade(position, "SELL", close, win_units, loss_units)
+    return _prepare_anchor_trade(position, "SELL", float(bar["Close"]), win_units, loss_units)
 
 
 def _gap_aware_fill(data, level, action, is_stop):
@@ -742,18 +898,62 @@ def tp_session_ratio(data, position, *_, **__):
 def flatten_session_eod(
     data,
     position,
-    flatten_hour=21,
-    flatten_minute=45,
+    flatten_hour=23,
+    flatten_minute=0,
     *_,
     **__,
 ):
     """
-    Force-close any open position at/after the session flatten time (Europe/Madrid).
+    Force-close any open position at/after flatten time the SAME Madrid day.
 
-    Default 21:45 Madrid = the 15:45–16:00 America/New_York bar (US cash close).
-    Fill at the bar close.
+    Default 23:00. Use this for same-day-only trades.
+    For overnight holds until before the next session, use
+    flatten_before_next_session instead.
     """
     if position is None or not position.is_open:
+        return False
+
+    if _local_bar_minutes(data.index) < flatten_hour * 60 + flatten_minute:
+        return False
+
+    position.exit_fill_price = float(data["Close"].iloc[-1])
+    position.exit_reason = "EOD"
+    return True
+
+
+def flatten_before_next_session(
+    data,
+    position,
+    flatten_hour=14,
+    flatten_minute=0,
+    *_,
+    **__,
+):
+    """
+    Allow overnight holds; flatten the next Madrid calendar day at/after
+    flatten_hour:flatten_minute (default 14:00), before the next 15:30 setup.
+
+    Does nothing on the entry day — only starting the following Madrid date.
+    """
+    if position is None or not position.is_open or position.entry_time is None:
+        return False
+
+    entry_ts = position.entry_time
+    try:
+        import pandas as pd
+        entry_ts = pd.Timestamp(entry_ts)
+        if entry_ts.tzinfo is not None:
+            entry_date = entry_ts.tz_convert(SESSION_INPUT_TZ).date()
+        else:
+            entry_date = entry_ts.date()
+    except Exception:
+        entry_date = entry_ts.date() if hasattr(entry_ts, "date") else None
+
+    if entry_date is None:
+        return False
+
+    current_date = _session_date_for_bar(data.index)
+    if current_date <= entry_date:
         return False
 
     if _local_bar_minutes(data.index) < flatten_hour * 60 + flatten_minute:

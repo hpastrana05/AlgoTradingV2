@@ -34,8 +34,8 @@ def main():
     parser.add_argument(
         "--risk-pct",
         type=float,
-        default=0.01,
-        help="Fraction of equity risked to the stop per trade (e.g. 0.01 for 1%).",
+        default=1.0,
+        help="Fraction of equity risked to the stop per trade (1.0 = 100%, TV-like all-in).",
     )
     parser.add_argument(
         "--period", 

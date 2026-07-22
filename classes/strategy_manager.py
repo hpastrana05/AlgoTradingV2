@@ -79,7 +79,14 @@ class StrategyManager:
     def update_market_data(self):
         self.data_manager.update_data()
 
-    def check_strategy(self):
+    def check_strategy(self, defer_position_open=False):
+        """
+        Evaluate entry/exit for the current bar.
+
+        defer_position_open: when True (backtest matching TradingView with
+        process_orders_on_close=false), entry signals arm SL/TP / session state
+        but do not call position.open() — the backtester fills at the next bar open.
+        """
         current_price = self.data_manager.get_current_price()
         # Broker calls must use Trading212 ticker_API (may be None).
         broker_ticker = self.position.ticker_api
@@ -103,11 +110,13 @@ class StrategyManager:
                 LOGGER.info(f"Entry signal triggered for: {self.name}")
                 bar = self.data_manager.data.iloc[-1]
                 entry_action = self.position.intended_action or self.position.action
-                self.position.open(
-                    entry_price=current_price,
-                    candle_low=bar["Low"],
-                    candle_high=bar["High"],
-                    action=entry_action,
-                )
+                if not defer_position_open:
+                    self.position.open(
+                        entry_price=current_price,
+                        candle_low=bar["Low"],
+                        candle_high=bar["High"],
+                        action=entry_action,
+                        entry_time=self.data_manager.data.index[-1],
+                    )
                 return broker_ticker, entry_action, current_price, None
             return broker_ticker, "HOLD", current_price, None

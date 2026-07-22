@@ -16,7 +16,8 @@ class Backtesting:
         ticker=None,
         period=None,
         interval=None,
-        risk_pct=0.01,
+        risk_pct=1.0,
+        fill_on_next_open=True,
     ):
         self.strategy_manager = StrategyManager.from_json(
             strategy_path,
@@ -27,8 +28,13 @@ class Backtesting:
         self.initial_capital = initial_capital
         self.commission = commission
         # Fraction of equity risked to the stop on each trade (e.g. 0.01 = 1%).
+        # 1.0 = risk 100% of equity to the stop (caps at all-in) — matches TV
+        # default_qty_type = percent_of_equity 100 for typical session stops.
         # When no stop is set, falls back to full capital.
         self.risk_pct = risk_pct
+        # True → match TradingView process_orders_on_close=false (fill next open).
+        # False → fill at signal-bar close (live-engine style).
+        self.fill_on_next_open = fill_on_next_open
 
     def _size_shares(self, cash, price, stop_loss_price):
         """Risk-based size capped at available cash (1x)."""
@@ -94,8 +100,82 @@ class Backtesting:
 
         LOGGER.info(
             f"Starting backtest on {len(full_data)} data rows with initial "
-            f"capital: {self.initial_capital}, risk_pct: {self.risk_pct}"
+            f"capital: {self.initial_capital}, risk_pct: {self.risk_pct}, "
+            f"fill_on_next_open: {self.fill_on_next_open}"
         )
+
+        # Queued entry from prior bar (TradingView next-bar open fill).
+        pending_entry = None  # {"action": "BUY"|"SELL", "signal_time": ts}
+        ticker = self.strategy_manager.position.ticker
+
+        def _open_long(fill_price, fill_time, signal_time=None):
+            nonlocal cash, shares, position_active, position_side
+            sl = self.strategy_manager.position.stop_loss_price
+            sized = self._size_shares(cash, fill_price, sl)
+            if sized <= 0:
+                LOGGER.warning(f"[{fill_time}] BUY skipped — zero size")
+                self.strategy_manager.position.close()
+                return False
+            spend = sized * fill_price / (1.0 - self.commission)
+            cash -= spend
+            shares = sized
+            position_active = True
+            position_side = "LONG"
+            self.strategy_manager.position.open(
+                entry_price=fill_price,
+                candle_low=float(current_row["Low"]),
+                candle_high=float(current_row["High"]),
+                action="BUY",
+                entry_time=signal_time if signal_time is not None else fill_time,
+            )
+            equity = _equity_mark(fill_price)
+            trades.append({
+                "type": "BUY",
+                "side": "LONG",
+                "timestamp": fill_time,
+                "price": fill_price,
+                "shares": shares,
+                "portfolio_value": equity,
+            })
+            LOGGER.debug(
+                f"[{fill_time}] BUY {shares:.4f} shares of {ticker} "
+                f"at {fill_price:.2f} (spend={spend:.2f}, cash_left={cash:.2f})"
+            )
+            return True
+
+        def _open_short(fill_price, fill_time, signal_time=None):
+            nonlocal cash, shares, position_active, position_side, short_entry_price
+            sl = self.strategy_manager.position.stop_loss_price
+            sized = self._size_shares(cash, fill_price, sl)
+            if sized <= 0:
+                LOGGER.warning(f"[{fill_time}] SHORT skipped — zero size")
+                self.strategy_manager.position.close()
+                return False
+            shares = sized
+            short_entry_price = fill_price
+            position_active = True
+            position_side = "SHORT"
+            self.strategy_manager.position.open(
+                entry_price=fill_price,
+                candle_low=float(current_row["Low"]),
+                candle_high=float(current_row["High"]),
+                action="SELL",
+                entry_time=signal_time if signal_time is not None else fill_time,
+            )
+            equity = _equity_mark(fill_price)
+            trades.append({
+                "type": "SHORT",
+                "side": "SHORT",
+                "timestamp": fill_time,
+                "price": fill_price,
+                "shares": shares,
+                "portfolio_value": equity,
+            })
+            LOGGER.debug(
+                f"[{fill_time}] SHORT {shares:.4f} shares of {ticker} "
+                f"at {fill_price:.2f}"
+            )
+            return True
 
         for i in range(len(full_data)):
             # Slice the data so the strategy only sees up to index i (inclusive)
@@ -109,62 +189,43 @@ class Backtesting:
             # Update the strategy manager's view of the data
             self.strategy_manager.data_manager.data = slice_df
 
-            # Evaluate strategy signals for this step
-            ticker, action, price, exit_reason = self.strategy_manager.check_strategy()
+            # 1) Fill a queued entry at this bar's Open (TV next-bar fill).
+            if pending_entry is not None and not position_active:
+                open_px = float(current_row["Open"])
+                if pd.isna(open_px) or open_px <= 0:
+                    LOGGER.warning(
+                        f"[{current_row.name}] pending entry dropped — bad Open"
+                    )
+                    self.strategy_manager.position.close()
+                    pending_entry = None
+                else:
+                    act = pending_entry["action"]
+                    sig_ts = pending_entry["signal_time"]
+                    if act == "BUY":
+                        _open_long(open_px, current_row.name, signal_time=sig_ts)
+                    else:
+                        _open_short(open_px, current_row.name, signal_time=sig_ts)
+                    pending_entry = None
+
+            # 2) Evaluate strategy (exits can fire on the fill bar).
+            # Always defer position.open in backtests — _open_long/_open_short own fills.
+            ticker, action, price, exit_reason = self.strategy_manager.check_strategy(
+                defer_position_open=True
+            )
             mark_price = float(current_row["Close"]) if not pd.isna(current_row["Close"]) else price
 
-            # Execute trade simulation based on strategy action
-            if action == "BUY" and not position_active:
-                sl = self.strategy_manager.position.stop_loss_price
-                shares = self._size_shares(cash, price, sl)
-                if shares <= 0:
-                    LOGGER.warning(f"[{current_row.name}] BUY skipped — zero size")
-                    self.strategy_manager.position.close()
+            # 3) Execute based on action
+            if action in ("BUY", "SELL") and not position_active:
+                if self.fill_on_next_open:
+                    # Arm levels already set by entry signal; fill next bar open.
+                    pending_entry = {
+                        "action": action,
+                        "signal_time": current_row.name,
+                    }
+                elif action == "BUY":
+                    _open_long(price, current_row.name)
                 else:
-                    spend = shares * price / (1.0 - self.commission)
-                    cash -= spend
-                    position_active = True
-                    position_side = "LONG"
-                    equity = _equity_mark(price)
-
-                    trades.append({
-                        "type": "BUY",
-                        "side": "LONG",
-                        "timestamp": current_row.name,
-                        "price": price,
-                        "shares": shares,
-                        "portfolio_value": equity,
-                    })
-                    LOGGER.debug(
-                        f"[{current_row.name}] BUY {shares:.4f} shares of {ticker} "
-                        f"at {price:.2f} (spend={spend:.2f}, cash_left={cash:.2f})"
-                    )
-
-            elif action == "SELL" and not position_active:
-                sl = self.strategy_manager.position.stop_loss_price
-                shares = self._size_shares(cash, price, sl)
-                if shares <= 0:
-                    LOGGER.warning(f"[{current_row.name}] SHORT skipped — zero size")
-                    self.strategy_manager.position.close()
-                else:
-                    # Notional capped at cash (1x); cash stays, PnL settles on cover.
-                    short_entry_price = price
-                    position_active = True
-                    position_side = "SHORT"
-                    equity = _equity_mark(price)
-
-                    trades.append({
-                        "type": "SHORT",
-                        "side": "SHORT",
-                        "timestamp": current_row.name,
-                        "price": price,
-                        "shares": shares,
-                        "portfolio_value": equity,
-                    })
-                    LOGGER.debug(
-                        f"[{current_row.name}] SHORT {shares:.4f} shares of {ticker} "
-                        f"at {price:.2f}"
-                    )
+                    _open_short(price, current_row.name)
 
             elif action == "SELL" and position_active and position_side == "LONG":
                 proceeds = shares * price * (1.0 - self.commission)
@@ -223,6 +284,11 @@ class Backtesting:
                 "portfolio_value": current_val,
                 "close_price": mark_price,
             })
+
+        if pending_entry is not None:
+            LOGGER.warning("Dropping pending entry at end of data (never filled)")
+            self.strategy_manager.position.close()
+            pending_entry = None
 
         # Restore the full data to the data manager
         self.strategy_manager.data_manager.data = full_data

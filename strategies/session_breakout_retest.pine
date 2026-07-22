@@ -1,0 +1,223 @@
+//@version=5
+// Matches web backtest when: 15m chart, same symbol, commission 0.1%,
+// 100% equity sizing, process_orders_on_close=false (fill next bar open).
+strategy(
+     title = "Session Breakout Retest (Madrid)",
+     shorttitle = "SessBO Retest",
+     overlay = true,
+     initial_capital = 10000,
+     default_qty_type = strategy.percent_of_equity,
+     default_qty_value = 100,
+     commission_type = strategy.commission.percent,
+     commission_value = 0.1,
+     pyramiding = 0,
+     calc_on_every_tick = false,
+     process_orders_on_close = false,
+     close_entries_rule = "ANY"
+ )
+
+// ─── Inputs (Europe/Madrid) ───────────────────────────────────────────────────
+string TZ = "Europe/Madrid"
+
+i_sessionH = input.int(15, "Anchor hour", minval = 0, maxval = 23, group = "Session")
+i_sessionM = input.int(30, "Anchor minute", minval = 0, maxval = 59, group = "Session")
+
+i_boH = input.int(16, "Breakout deadline hour", minval = 0, maxval = 23, group = "Deadlines")
+i_boM = input.int(30, "Breakout deadline minute", minval = 0, maxval = 59, group = "Deadlines")
+i_rtH = input.int(23, "Retest deadline hour (entry day)", minval = 0, maxval = 23, group = "Deadlines")
+i_rtM = input.int(0, "Retest deadline minute", minval = 0, maxval = 59, group = "Deadlines")
+
+i_flatH = input.int(14, "Flatten next day hour", minval = 0, maxval = 23, group = "Flatten")
+i_flatM = input.int(0, "Flatten next day minute", minval = 0, maxval = 59, group = "Flatten")
+i_useOvernightFlat = input.bool(true, "Overnight OK → flatten before next session", group = "Flatten")
+i_sameDayFlatH = input.int(23, "Same-day flatten hour (if overnight OFF)", group = "Flatten")
+i_sameDayFlatM = input.int(0, "Same-day flatten minute", group = "Flatten")
+
+i_boBufPct = input.float(0.0, "Breakout buffer % of range", minval = 0.0, step = 0.1, group = "Filters")
+i_rtTolPct = input.float(0.0, "Retest touch tolerance % of range", minval = 0.0, step = 0.1, group = "Filters")
+
+i_winU = input.float(2.0, "TP win units (R)", minval = 0.1, step = 0.1, group = "Risk")
+i_lossU = input.float(1.0, "SL loss units (R)", minval = 0.1, step = 0.1, group = "Risk")
+
+i_longOk = input.bool(true, "Allow longs", group = "Direction")
+i_shortOk = input.bool(true, "Allow shorts", group = "Direction")
+
+// ─── Time helpers ─────────────────────────────────────────────────────────────
+madridMins() => hour(time, TZ) * 60 + minute(time, TZ)
+madridYMD() => year(time, TZ) * 10000 + month(time, TZ) * 100 + dayofmonth(time, TZ)
+f_past(h, m) => madridMins() > h * 60 + m
+f_atOrAfter(h, m) => madridMins() >= h * 60 + m
+f_isAnchor() => hour(time, TZ) == i_sessionH and minute(time, TZ) == i_sessionM
+
+// ─── Session state ────────────────────────────────────────────────────────────
+var float sessHigh = na
+var float sessLow = na
+var float sessMid = na
+var int sessDay = na
+var bool sessTraded = false
+var bool sessAbandoned = false
+
+var string boSide = na
+var int boBar = na
+var bool boExt = false
+
+var float entryPx = na
+var float slPx = na
+var float tpPx = na
+var int entryDay = na
+var string tradeSide = na  // "LONG" | "SHORT"
+
+// New Madrid calendar day → reset setup state (open trade kept)
+int today = madridYMD()
+if na(sessDay) or today != sessDay
+    sessDay := today
+    sessHigh := na
+    sessLow := na
+    sessMid := na
+    sessTraded := false
+    sessAbandoned := false
+    boSide := na
+    boBar := na
+    boExt := false
+
+// Capture anchor High/Low on the 15:30 Madrid candle
+if f_isAnchor()
+    sessHigh := high
+    sessLow := low
+    sessMid := (high + low) * 0.5
+
+float rng = not na(sessHigh) and not na(sessLow) ? sessHigh - sessLow : na
+bool haveRange = not na(rng) and rng > 0
+bool afterAnchor = haveRange and not f_isAnchor()
+
+float buf = haveRange ? rng * (i_boBufPct / 100.0) : 0.0
+float tol = haveRange ? rng * (i_rtTolPct / 100.0) : 0.0
+bool inBoWindow = afterAnchor and not f_past(i_boH, i_boM)
+
+// ─── Breakout / invalidate / extension ────────────────────────────────────────
+if afterAnchor and not sessTraded and not sessAbandoned and strategy.position_size == 0
+    if not na(boSide) and bar_index > boBar
+        if boSide == "BUY" and close <= sessHigh
+            boSide := na
+            boBar := na
+            boExt := false
+        else if boSide == "SELL" and close >= sessLow
+            boSide := na
+            boBar := na
+            boExt := false
+
+    if f_past(i_rtH, i_rtM) or (f_past(i_boH, i_boM) and na(boSide))
+        sessAbandoned := true
+
+    if not sessAbandoned
+        if inBoWindow and na(boSide)
+            if close > sessHigh + buf
+                boSide := "BUY"
+                boBar := bar_index
+                boExt := false
+            else if close < sessLow - buf
+                boSide := "SELL"
+                boBar := bar_index
+                boExt := false
+
+        if not na(boSide) and bar_index > boBar and not boExt
+            if boSide == "BUY" and close > sessHigh
+                boExt := true
+            else if boSide == "SELL" and close < sessLow
+                boExt := true
+
+// ─── Retest entry ─────────────────────────────────────────────────────────────
+bool longRetest = false
+bool shortRetest = false
+
+if afterAnchor and not sessTraded and not sessAbandoned and strategy.position_size == 0 and not na(boSide) and bar_index > boBar and boExt
+    if boSide == "BUY" and i_longOk
+        longRetest := open > sessHigh and high > sessHigh and low <= sessHigh + tol and close > sessHigh and low >= sessMid
+    if boSide == "SELL" and i_shortOk
+        shortRetest := open < sessLow and low < sessLow and high >= sessLow - tol and close < sessLow and high <= sessMid
+
+if longRetest
+    float riskL = close - sessMid
+    if riskL > 0
+        entryPx := close
+        slPx := sessMid
+        tpPx := close + (i_winU / i_lossU) * riskL
+        entryDay := today
+        tradeSide := "LONG"
+        sessTraded := true
+        boSide := na
+        boBar := na
+        boExt := false
+        strategy.entry("Long", strategy.long, comment = "Retest Long")
+
+if shortRetest
+    float riskS = sessMid - close
+    if riskS > 0
+        entryPx := close
+        slPx := sessMid
+        tpPx := close - (i_winU / i_lossU) * riskS
+        entryDay := today
+        tradeSide := "SHORT"
+        sessTraded := true
+        boSide := na
+        boBar := na
+        boExt := false
+        strategy.entry("Short", strategy.short, comment = "Retest Short")
+
+// ─── Exits: SL / TP / Flatten (run every bar while in a trade) ─────────────────
+bool flatSignal = false
+bool hitSL = false
+bool hitTP = false
+
+if strategy.position_size != 0 and not na(slPx) and not na(tpPx)
+    if not na(entryDay)
+        if i_useOvernightFlat
+            flatSignal := today > entryDay and f_atOrAfter(i_flatH, i_flatM)
+        else
+            flatSignal := today == entryDay and f_atOrAfter(i_sameDayFlatH, i_sameDayFlatM)
+
+    // Detect SL/TP for markers (High/Low of the bar)
+    if strategy.position_size > 0
+        hitSL := low <= slPx
+        hitTP := (not hitSL) and high >= tpPx
+    else
+        hitSL := high >= slPx
+        hitTP := (not hitSL) and low <= tpPx
+
+    if flatSignal
+        // Cancel bracket and flatten before next session
+        strategy.cancel("L-Exit")
+        strategy.cancel("S-Exit")
+        if strategy.position_size > 0
+            strategy.close("Long", comment = "Flatten")
+        else
+            strategy.close("Short", comment = "Flatten")
+    else
+        // Active SL + TP for the Strategy Tester
+        if strategy.position_size > 0
+            strategy.exit("L-Exit", from_entry = "Long", stop = slPx, limit = tpPx, comment_loss = "SL", comment_profit = "TP")
+        else if strategy.position_size < 0
+            strategy.exit("S-Exit", from_entry = "Short", stop = slPx, limit = tpPx, comment_loss = "SL", comment_profit = "TP")
+
+// Clear levels when position is closed
+if strategy.position_size == 0 and strategy.position_size[1] != 0
+    entryPx := na
+    slPx := na
+    tpPx := na
+    entryDay := na
+    tradeSide := na
+
+// ─── Plots ────────────────────────────────────────────────────────────────────
+plot(haveRange ? sessHigh : na, "Session High", color = color.new(color.blue, 0), style = plot.style_linebr, linewidth = 2)
+plot(haveRange ? sessLow : na, "Session Low", color = color.new(color.blue, 0), style = plot.style_linebr, linewidth = 2)
+plot(haveRange ? sessMid : na, "Session Mid", color = color.new(color.orange, 30), style = plot.style_linebr)
+
+plot(strategy.position_size != 0 ? slPx : na, "SL", color = color.red, style = plot.style_linebr, linewidth = 2)
+plot(strategy.position_size != 0 ? tpPx : na, "TP", color = color.lime, style = plot.style_linebr, linewidth = 2)
+
+bgcolor(f_isAnchor() ? color.new(color.blue, 85) : na, title = "Anchor bar")
+plotshape(longRetest, title = "Long entry", style = shape.triangleup, location = location.belowbar, color = color.lime, size = size.small, text = "L")
+plotshape(shortRetest, title = "Short entry", style = shape.triangledown, location = location.abovebar, color = color.red, size = size.small, text = "S")
+plotshape(hitSL and strategy.position_size[1] != 0, title = "SL exit", style = shape.xcross, location = location.absolute, color = color.red, size = size.tiny)
+plotshape(hitTP and strategy.position_size[1] != 0, title = "TP exit", style = shape.xcross, location = location.absolute, color = color.lime, size = size.tiny)
+plotshape(flatSignal and strategy.position_size[1] != 0, title = "Flatten", style = shape.xcross, location = location.absolute, color = color.orange, size = size.tiny)

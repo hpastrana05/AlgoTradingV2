@@ -1,7 +1,7 @@
 {
     "name": "Session Breakout Retest",
     "ticker_API": "None",
-    "ticker_data": "None",
+    "ticker_data": "NQ=F",
     "interval": "15m",
     "period": "max",
     "action": "BUY",
@@ -12,22 +12,26 @@
                 "type": "session_retest_long",
                 "session_hour": 15,
                 "session_minute": 30,
-                "entry_deadline_hour": 16,
-                "entry_deadline_minute": 15,
+                "breakout_deadline_hour": 16,
+                "breakout_deadline_minute": 30,
+                "retest_deadline_hour": 23,
+                "retest_deadline_minute": 0,
                 "breakout_buffer_pct": 0,
                 "retest_tolerance_pct": 0,
-                "win_units": 1.5,
+                "win_units": 1.75,
                 "loss_units": 1
             },
             {
                 "type": "session_retest_short",
                 "session_hour": 15,
                 "session_minute": 30,
-                "entry_deadline_hour": 16,
-                "entry_deadline_minute": 15,
+                "breakout_deadline_hour": 16,
+                "breakout_deadline_minute": 30,
+                "retest_deadline_hour": 23,
+                "retest_deadline_minute": 0,
                 "breakout_buffer_pct": 0,
                 "retest_tolerance_pct": 0,
-                "win_units": 1.5,
+                "win_units": 1.75,
                 "loss_units": 1
             }
         ]
@@ -36,15 +40,15 @@
         "type": "OR",
         "signals": [
             {
+                "type": "flatten_before_next_session",
+                "flatten_hour": 14,
+                "flatten_minute": 0
+            },
+            {
                 "type": "sl_session_mid"
             },
             {
                 "type": "tp_session_ratio"
-            },
-            {
-                "type": "flatten_session_eod",
-                "flatten_hour": 21,
-                "flatten_minute": 45
             }
         ]
     }
