@@ -1,0 +1,45 @@
+{
+    "name": "ORB 15:30 España - Ruptura de rango (2 velas)",
+    "ticker_API": "None",
+    "ticker_data": "NQ=F",
+    "interval": "15m",
+    "period": "max",
+    "action": "BUY",
+    "entry_rule": {
+        "type": "OR",
+        "signals": [
+            {
+                "type": "session_two_bar_breakout_long",
+                "session_hour": 15,
+                "session_minute": 30,
+                "range_bars": 2,
+                "bar_minutes": 15,
+                "entry_deadline_hour": 23,
+                "entry_deadline_minute": 59,
+                "breakout_buffer_pct": 0
+            },
+            {
+                "type": "session_two_bar_breakout_short",
+                "session_hour": 15,
+                "session_minute": 30,
+                "range_bars": 2,
+                "bar_minutes": 15,
+                "entry_deadline_hour": 23,
+                "entry_deadline_minute": 59,
+                "breakout_buffer_pct": 0
+            }
+        ]
+    },
+    "exit_rule": {
+        "type": "OR",
+        "signals": [
+            {
+                "type": "sl_session_extreme"
+            },
+            {
+                "type": "tp_fixed_points",
+                "points": 30
+            }
+        ]
+    }
+}

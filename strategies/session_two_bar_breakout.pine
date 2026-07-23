@@ -1,0 +1,71 @@
+//@version=5
+strategy("ORB 15:30 España - Ruptura de rango (2 velas)",
+     overlay=true,
+     initial_capital=10000,
+     currency=currency.USD,
+     default_qty_type=strategy.fixed,
+     default_qty_value=1,
+     commission_type=strategy.commission.percent,
+     commission_value=0.0,
+     slippage=2)
+
+// ================== INPUTS ==================
+tpPoints    = input.float(30, "Take Profit (puntos)")
+sessionStr  = input.session("1530-1545", "Ventana de las 2 velas (HHMM-HHMM)")
+sessionTz   = input.string("Europe/Madrid", "Zona horaria de la sesión", options=["America/New_York", "Europe/Madrid", "Etc/UTC", "America/Chicago", "Asia/Tokyo"])
+
+// ================== ESTADO ==================
+var float rangeHigh       = na
+var float rangeLow        = na
+var bool  rangeReady      = false
+var bool  tradeTakenToday = false
+var int   barsSinceOpen   = -1
+
+inSession    = not na(time(timeframe.period, sessionStr, sessionTz))
+sessionStart = inSession and not inSession[1]
+newDay       = ta.change(time("D", sessionTz)) != 0
+
+if newDay
+    barsSinceOpen   := -1
+    rangeReady      := false
+    tradeTakenToday := false
+    rangeHigh       := na
+    rangeLow        := na
+
+if sessionStart
+    rangeHigh     := high
+    rangeLow      := low
+    barsSinceOpen := 0
+else if barsSinceOpen == 0
+    rangeHigh     := math.max(rangeHigh, high)
+    rangeLow      := math.min(rangeLow, low)
+    rangeReady    := true
+    barsSinceOpen := 1
+
+// ================== ENTRADAS ==================
+longCond  = rangeReady and not tradeTakenToday and strategy.position_size == 0 and close > rangeHigh
+shortCond = rangeReady and not tradeTakenToday and strategy.position_size == 0 and close < rangeLow
+
+if longCond
+    strategy.entry("Long", strategy.long)
+    tradeTakenToday := true
+
+if shortCond
+    strategy.entry("Short", strategy.short)
+    tradeTakenToday := true
+
+// ================== SALIDAS ==================
+if strategy.position_size > 0
+    strategy.exit("Salir Long", from_entry="Long", stop=rangeLow, limit=strategy.position_avg_price + tpPoints)
+
+if strategy.position_size < 0
+    strategy.exit("Salir Short", from_entry="Short", stop=rangeHigh, limit=strategy.position_avg_price - tpPoints)
+
+// ================== VISUALIZACIÓN ==================
+plot(rangeReady ? rangeHigh : na, "Máximo del rango", color=color.new(color.green, 0), style=plot.style_linebr)
+plot(rangeReady ? rangeLow  : na, "Mínimo del rango", color=color.new(color.red, 0), style=plot.style_linebr)
+
+bgcolor(sessionStart or barsSinceOpen == 0 ? color.new(color.yellow, 85) : na, title="Velas usadas para el rango")
+
+plotshape(longCond,  title="Entrada Long",  style=shape.triangleup,   location=location.belowbar, color=color.green, size=size.small)
+plotshape(shortCond, title="Entrada Short", style=shape.triangledown, location=location.abovebar, color=color.red,   size=size.small)

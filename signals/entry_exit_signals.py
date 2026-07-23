@@ -570,35 +570,31 @@ def _update_breakout_extension(data, position):
         position.breakout_extended = True
 
 
-def _prepare_anchor_trade(position, side, entry, win_units, loss_units):
+def _prepare_anchor_trade(position, side, entry):
     """
-    SL at the opposite extreme of the anchor candle (full range risk):
+    Arm entry side + SL at the opposite extreme of the anchor candle:
       BUY  → SL at session_low
       SELL → SL at session_high
-    TP sized by win_units:loss_units from that risk.
+    Take-profit is NOT set here — configure win_units/loss_units on tp_session_ratio.
     """
     if side == "BUY":
         sl = position.session_low
         if sl is None:
             return False
-        risk = entry - sl
-        if risk <= 0:
+        if entry - sl <= 0:
             return False
-        tp = entry + (win_units / loss_units) * risk
     elif side == "SELL":
         sl = position.session_high
         if sl is None:
             return False
-        risk = sl - entry
-        if risk <= 0:
+        if sl - entry <= 0:
             return False
-        tp = entry - (win_units / loss_units) * risk
     else:
         return False
 
     position.intended_action = side
     position.stop_loss_price = sl
-    position.take_profit_price = tp
+    position.take_profit_price = None
     _clear_breakout_state(position)
     position.session_traded = True
     return True
@@ -667,8 +663,6 @@ def session_retest_long(
     entry_deadline_minute=None,
     breakout_buffer_pct=0,
     retest_tolerance_pct=0,
-    win_units=2,
-    loss_units=1,
     *_,
     **__,
 ):
@@ -682,7 +676,7 @@ def session_retest_long(
     4) Invalidation: close back at/below the high clears the breakout.
     5) Retest must not stab through the opposite extreme (SL = anchor low).
 
-    SL at anchor low (full candle range), TP by win_units:loss_units.
+    SL at anchor low. Configure TP ratio on tp_session_ratio (win_units/loss_units).
     """
     if position.is_open:
         return False
@@ -743,7 +737,7 @@ def session_retest_long(
     if not _long_retest_ok(bar, level, sl_level, rng, retest_tolerance_pct):
         return False
 
-    return _prepare_anchor_trade(position, "BUY", float(bar["Close"]), win_units, loss_units)
+    return _prepare_anchor_trade(position, "BUY", float(bar["Close"]))
 
 
 def session_retest_short(
@@ -759,8 +753,6 @@ def session_retest_short(
     entry_deadline_minute=None,
     breakout_buffer_pct=0,
     retest_tolerance_pct=0,
-    win_units=2,
-    loss_units=1,
     *_,
     **__,
 ):
@@ -774,7 +766,7 @@ def session_retest_short(
     4) Invalidation: close back at/above the low clears the breakout.
     5) Retest must not stab through the opposite extreme (SL = anchor high).
 
-    SL at anchor high (full candle range), TP by win_units:loss_units.
+    SL at anchor high. Configure TP ratio on tp_session_ratio (win_units/loss_units).
     """
     if position.is_open:
         return False
@@ -834,7 +826,7 @@ def session_retest_short(
     if not _short_retest_ok(bar, level, sl_level, rng, retest_tolerance_pct):
         return False
 
-    return _prepare_anchor_trade(position, "SELL", float(bar["Close"]), win_units, loss_units)
+    return _prepare_anchor_trade(position, "SELL", float(bar["Close"]))
 
 
 def _gap_aware_fill(data, level, action, is_stop):
@@ -891,12 +883,50 @@ def sl_session_extreme(data, position, *_, **__):
     return False
 
 
-def tp_session_ratio(data, position, *_, **__):
-    """Take profit at the price computed on entry (1:1.5, 1:2, etc.)."""
-    if position is None or not position.is_open or position.take_profit_price is None:
+def _session_tp_from_ratio(position, win_units, loss_units):
+    """TP from entry + SL distance × (win_units / loss_units)."""
+    entry = position.entry_price
+    sl = position.stop_loss_price
+    if entry is None or sl is None:
+        return None
+    if loss_units is None or float(loss_units) <= 0:
+        return None
+
+    ratio = float(win_units) / float(loss_units)
+    if position.action == "BUY":
+        risk = float(entry) - float(sl)
+        if risk <= 0:
+            return None
+        return float(entry) + ratio * risk
+    if position.action == "SELL":
+        risk = float(sl) - float(entry)
+        if risk <= 0:
+            return None
+        return float(entry) - ratio * risk
+    return None
+
+
+def tp_session_ratio(
+    data,
+    position,
+    win_units=1.75,
+    loss_units=1,
+    *_,
+    **__,
+):
+    """
+    Take profit sized from the session SL distance.
+    Example: loss_units=1, win_units=1.75 → target 1.75R from entry.
+    Put win_units / loss_units here (not on the entry signals).
+    """
+    if position is None or not position.is_open:
         return False
 
-    tp = position.take_profit_price
+    tp = _session_tp_from_ratio(position, win_units, loss_units)
+    if tp is None:
+        return False
+
+    position.take_profit_price = tp
 
     if position.action == "BUY":
         if float(data["High"].iloc[-1]) >= tp:
@@ -980,4 +1010,268 @@ def flatten_before_next_session(
     position.exit_fill_price = float(data["Close"].iloc[-1])
     position.exit_reason = "EOD"
     return True
+
+
+# ---------------------------------------------------------------------------
+# Opening-range breakout (first N session bars, e.g. 15:30 + 15:45 on 15m)
+# ---------------------------------------------------------------------------
+
+def _opening_range_bar_minutes(session_hour, session_minute, range_bars, bar_minutes):
+    """Madrid minute-of-day for each bar in the opening range."""
+    start = int(session_hour) * 60 + int(session_minute)
+    step = int(bar_minutes)
+    n = int(range_bars)
+    return [start + i * step for i in range(n)]
+
+
+def _day_local_index(index, current_date):
+    if index.tz is not None:
+        day_index = index.tz_convert(SESSION_INPUT_TZ)
+        day_mask = day_index.date == current_date
+        return day_index, day_mask
+    return index, index.date == current_date
+
+
+def _update_opening_range_levels(
+    data,
+    position,
+    session_hour=15,
+    session_minute=30,
+    range_bars=2,
+    bar_minutes=15,
+):
+    """
+    After the opening-range bars have closed, store combined high/low on the
+    position (max high / min low across those bars).
+
+    Default: 15:30 and 15:45 Madrid on a 15m chart.
+    Levels are only active once the current bar is strictly after the last
+    range bar (entries happen on subsequent candles).
+    """
+    if len(data) < int(range_bars) + 1:
+        return False
+
+    index = data.index
+    current_date = _sync_session_day(position, data)
+    day_index, day_mask = _day_local_index(index, current_date)
+
+    expected = _opening_range_bar_minutes(
+        session_hour, session_minute, range_bars, bar_minutes
+    )
+    minutes = day_index.hour * 60 + day_index.minute
+    range_mask = day_mask & minutes.isin(expected)
+    range_bars_df = data.loc[range_mask]
+
+    if len(range_bars_df) < int(range_bars):
+        return position.session_high is not None
+
+    # Use the first N matching bars in chronological order
+    range_bars_df = range_bars_df.iloc[: int(range_bars)]
+    last_range_ts = range_bars_df.index[-1]
+    current_ts = index[-1]
+    if current_ts <= last_range_ts:
+        return position.session_high is not None
+
+    if position.session_high is None:
+        position.session_high = float(range_bars_df["High"].max())
+        position.session_low = float(range_bars_df["Low"].min())
+        position.session_mid = (position.session_high + position.session_low) / 2.0
+
+    return position.session_high is not None
+
+
+def _prepare_opening_range_trade(position, side, entry):
+    """
+    Arm entry + SL at the opposite side of the opening range:
+      BUY  → SL at range low
+      SELL → SL at range high
+    TP is configured on tp_fixed_points (or another exit signal).
+    """
+    if side == "BUY":
+        sl = position.session_low
+        if sl is None or entry - sl <= 0:
+            return False
+    elif side == "SELL":
+        sl = position.session_high
+        if sl is None or sl - entry <= 0:
+            return False
+    else:
+        return False
+
+    position.intended_action = side
+    position.stop_loss_price = sl
+    position.take_profit_price = None
+    _clear_breakout_state(position)
+    position.session_traded = True
+    return True
+
+
+def _session_two_bar_breakout(
+    data,
+    position,
+    side,
+    session_hour=15,
+    session_minute=30,
+    range_bars=2,
+    bar_minutes=15,
+    entry_deadline_hour=23,
+    entry_deadline_minute=0,
+    breakout_buffer_pct=0,
+):
+    if position.is_open:
+        return False
+
+    _sync_session_day(position, data)
+
+    if position.session_traded or position.session_abandoned:
+        return False
+
+    if not _update_opening_range_levels(
+        data,
+        position,
+        session_hour=session_hour,
+        session_minute=session_minute,
+        range_bars=range_bars,
+        bar_minutes=bar_minutes,
+    ):
+        return False
+
+    if _past_deadline(data, entry_deadline_hour, entry_deadline_minute):
+        position.session_abandoned = True
+        return False
+
+    close = float(data["Close"].iloc[-1])
+    rng = _anchor_range(position)
+    if rng is None or rng <= 0:
+        return False
+
+    buffer = rng * (float(breakout_buffer_pct) / 100.0)
+
+    if side == "BUY":
+        if close <= position.session_high + buffer:
+            return False
+        return _prepare_opening_range_trade(position, "BUY", close)
+
+    if side == "SELL":
+        if close >= position.session_low - buffer:
+            return False
+        return _prepare_opening_range_trade(position, "SELL", close)
+
+    return False
+
+
+def session_two_bar_breakout_long(
+    data,
+    position,
+    session_hour=15,
+    session_minute=30,
+    range_bars=2,
+    bar_minutes=15,
+    entry_deadline_hour=23,
+    entry_deadline_minute=0,
+    breakout_buffer_pct=0,
+    *_,
+    **__,
+):
+    """
+    Long breakout of the opening range (default: first two 15m bars from 15:30 Madrid).
+
+    Range high/low = max high / min low of those bars. Entry when a later candle
+    closes above the range high. SL at range low; set TP on tp_fixed_points.
+    """
+    return _session_two_bar_breakout(
+        data,
+        position,
+        "BUY",
+        session_hour=session_hour,
+        session_minute=session_minute,
+        range_bars=range_bars,
+        bar_minutes=bar_minutes,
+        entry_deadline_hour=entry_deadline_hour,
+        entry_deadline_minute=entry_deadline_minute,
+        breakout_buffer_pct=breakout_buffer_pct,
+    )
+
+
+def session_two_bar_breakout_short(
+    data,
+    position,
+    session_hour=15,
+    session_minute=30,
+    range_bars=2,
+    bar_minutes=15,
+    entry_deadline_hour=23,
+    entry_deadline_minute=0,
+    breakout_buffer_pct=0,
+    *_,
+    **__,
+):
+    """
+    Short breakout of the opening range (default: first two 15m bars from 15:30 Madrid).
+
+    Entry when a later candle closes below the range low. SL at range high;
+    set TP on tp_fixed_points.
+    """
+    return _session_two_bar_breakout(
+        data,
+        position,
+        "SELL",
+        session_hour=session_hour,
+        session_minute=session_minute,
+        range_bars=range_bars,
+        bar_minutes=bar_minutes,
+        entry_deadline_hour=entry_deadline_hour,
+        entry_deadline_minute=entry_deadline_minute,
+        breakout_buffer_pct=breakout_buffer_pct,
+    )
+
+
+def _tp_from_fixed_points(position, points):
+    """TP = entry ± points (BUY above, SELL below)."""
+    entry = position.entry_price
+    if entry is None or points is None:
+        return None
+    pts = float(points)
+    if pts <= 0:
+        return None
+    if position.action == "BUY":
+        return float(entry) + pts
+    if position.action == "SELL":
+        return float(entry) - pts
+    return None
+
+
+def tp_fixed_points(
+    data,
+    position,
+    points=10,
+    *_,
+    **__,
+):
+    """
+    Take profit a fixed number of price points from entry.
+    Example: points=10 → long TP = entry+10, short TP = entry-10.
+    """
+    if position is None or not position.is_open:
+        return False
+
+    tp = _tp_from_fixed_points(position, points)
+    if tp is None:
+        return False
+
+    position.take_profit_price = tp
+
+    if position.action == "BUY":
+        if float(data["High"].iloc[-1]) >= tp:
+            _arm_exit(position, data, tp, "TP", is_stop=False)
+            return True
+        return False
+
+    if position.action == "SELL":
+        if float(data["Low"].iloc[-1]) <= tp:
+            _arm_exit(position, data, tp, "TP", is_stop=False)
+            return True
+        return False
+
+    return False
 

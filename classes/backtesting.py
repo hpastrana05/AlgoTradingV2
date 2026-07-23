@@ -128,6 +128,9 @@ class Backtesting:
                 action="BUY",
                 entry_time=signal_time if signal_time is not None else fill_time,
             )
+            self.strategy_manager.strategy.arm_exit_levels(
+                self.strategy_manager.position
+            )
             equity = _equity_mark(fill_price)
             trades.append({
                 "type": "BUY",
@@ -161,6 +164,9 @@ class Backtesting:
                 candle_high=float(current_row["High"]),
                 action="SELL",
                 entry_time=signal_time if signal_time is not None else fill_time,
+            )
+            self.strategy_manager.strategy.arm_exit_levels(
+                self.strategy_manager.position
             )
             equity = _equity_mark(fill_price)
             trades.append({

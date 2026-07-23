@@ -17,9 +17,7 @@
                 "retest_deadline_hour": 23,
                 "retest_deadline_minute": 0,
                 "breakout_buffer_pct": 0,
-                "retest_tolerance_pct": 0,
-                "win_units": 1.75,
-                "loss_units": 1
+                "retest_tolerance_pct": 0
             },
             {
                 "type": "session_retest_short",
@@ -30,9 +28,7 @@
                 "retest_deadline_hour": 23,
                 "retest_deadline_minute": 0,
                 "breakout_buffer_pct": 0,
-                "retest_tolerance_pct": 0,
-                "win_units": 1.75,
-                "loss_units": 1
+                "retest_tolerance_pct": 0
             }
         ]
     },
@@ -48,7 +44,9 @@
                 "type": "sl_session_extreme"
             },
             {
-                "type": "tp_session_ratio"
+                "type": "tp_session_ratio",
+                "win_units": 1.75,
+                "loss_units": 1
             }
         ]
     }

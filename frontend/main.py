@@ -121,6 +121,12 @@ def get_signal_metadata() -> List[Dict[str, Any]]:
                     description = "Extra % of the anchor candle range required beyond high/low for breakout"
                 elif param_name == "retest_tolerance_pct":
                     description = "% of the anchor candle range allowed when retesting the broken level"
+                elif param_name == "range_bars":
+                    description = "Number of opening-range candles (e.g. 2 = 15:30 + 15:45 on 15m)"
+                elif param_name == "bar_minutes":
+                    description = "Candle size in minutes used to build the opening range (e.g. 15)"
+                elif param_name == "points":
+                    description = "Fixed TP distance in price points from entry (e.g. 10)"
                 elif param_name in ("flatten_hour", "flatten_minute"):
                     description = (
                         f"Flatten clock ({param_name}), Europe/Madrid — "

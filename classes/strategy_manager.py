@@ -133,5 +133,7 @@ class StrategyManager:
                         action=entry_action,
                         entry_time=self.data_manager.data.index[-1],
                     )
+                    # TP ratio params live on exit signals (tp_session_ratio).
+                    self.strategy.arm_exit_levels(self.position)
                 return broker_ticker, entry_action, current_price, None
             return broker_ticker, "HOLD", current_price, None
